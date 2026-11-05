@@ -20,8 +20,8 @@ Type-2 customer dimension, and publishes a star schema for BI.
 
 ```
 dbt build --profiles-dir .
-Processed: 2 hooks | 24 models | 67 tests | 1 snapshot
-Summary:   94 total | 89 success | 5 warn
+Processed: 4 hooks | 26 models | 71 tests | 1 snapshot
+Summary:   102 total | 97 success | 5 warn
 ```
 
 The 5 warnings are **expected** — they are data-quality signals on a
@@ -63,11 +63,13 @@ sales_analytics/
 ├── models/
 │   ├── staging/                  # bronze: 7 stg_* models
 │   ├── silver/                   # 7 slv_* models + quarantine_records
-│   └── gold/                     # 5 dim_* + 3 fct_* models
+│   ├── gold/                     # 5 dim_* + 3 fct_* models
+│   └── observability/            # audit timeline + idempotency views
 ├── macros/
 │   ├── transform_helpers.sql     # cleaning / parsing / hashing helpers
 │   ├── incremental_helpers.sql   # late-arriving window + reconciliation
 │   ├── logging.sql               # structured model/step/run logging
+│   ├── observability.sql         # audit table DDL + row/hash metrics
 │   └── generate_schema_name.sql  # use custom schema names as-is
 ├── tests/                        # 4 singular SCD2 invariant tests
 ├── snapshots/stores_snapshot.sql # dbt snapshot on stores
@@ -122,6 +124,7 @@ Or use the helper:
 | Compile + docs index | `dbt compile --write-index --profiles-dir .` |
 | Serve docs | `dbt docs serve --no-open --port 8580` |
 | Follow structured logs | `dbt build --profiles-dir . 2>&1 \| Select-String '\[sales_analytics\]'` |
+| Check idempotency | `dbt run-operation check_idempotency --profiles-dir .` |
 | Validate bundle | `databricks bundle validate -t dev --profile DEFAULT` |
 | Deploy job | `.\scripts\deploy.ps1 -Target prod` |
 
@@ -169,7 +172,11 @@ files change.
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Setup, CI/CD, bundle deploy, promotion, rollback |
 | [docs/SECURITY.md](docs/SECURITY.md) | Secrets, token rotation, least privilege, PII handling |
 
-## Logging
+## Logging and audit
+
+Logging has two sinks: greppable console lines and a queryable Delta table.
+
+### Console lines
 
 Every model emits structured `start` / `end` lines automatically via
 project-level hooks, and multi-stage models log their intermediate steps:
@@ -181,18 +188,81 @@ project-level hooks, and multi-stage models log their intermediate steps:
 [sales_analytics] model=slv_orders step=reconcile target=dev catalog=dbt schema=silver
 [sales_analytics] model=slv_orders step=final target=dev catalog=dbt schema=silver
 [sales_analytics] model=slv_orders step=end target=dev catalog=dbt schema=silver
-[sales_analytics] run=end total=92 success=87 warn=5 error=0 other=0
+[sales_analytics] run=end total=98 success=93 warn=5 error=0 other=0
 ```
 
+### Audit table
+
+`on-run-start` creates `<catalog>.observability.pipeline_step_log` and every
+run appends:
+
+| Event | `step` | Carries |
+|---|---|---|
+| Run start / end | `run_start` / `run_end` | status counts |
+| Model start | `start` | timestamp |
+| Inline step | e.g. `parse`, `reconcile` | detail |
+| Model end | `end` | `rows_read`, `rows_written`, `content_hash` |
+
+`rows_read` is the sum of the model's direct parent row counts (for bronze,
+where there is no parent, it falls back to the model's own row count).
+`rows_written` is `count(*)` of the model relation after materialisation.
+`content_hash` is `sum(hash(...))` over stable business columns only;
+`_ingest_ts`, `_loaded_at`, `detected_at` and `dbt_*` columns are excluded so a
+re-run of an idempotent model hashes identically.
+
+```sql
+select model_name, rows_read, rows_written, content_hash
+from dbt.observability.pipeline_step_log
+where step = 'end' and status = 'success'
+order by logged_at desc;
+```
+
+### Step timeline
+
+`dbt.observability.pipeline_step_timeline` orders each model's events
+`start → steps → end` and attaches the model's row metrics to every step:
+
+```sql
+select model_name, phase, step, status, rows_read, rows_written, detail
+from dbt.observability.pipeline_step_timeline
+where run_id = (select run_id from dbt.observability.pipeline_step_log
+                where step = 'run_end' order by logged_at desc limit 1)
+order by model_name, phase;
+```
+
+### Idempotency check
+
+`dbt.observability.idempotency_check` compares the latest two successful `end`
+rows per model:
+
+```sql
+select model_name, previous_rows_written, latest_rows_written,
+       row_delta, content_unchanged, is_idempotent
+from dbt.observability.idempotency_check
+order by is_idempotent, model_name;
+```
+
+`is_idempotent` is true when both the row count and the content hash are
+unchanged; `NULL` means the model has only one observed run. The same verdict
+is available from the CLI:
+
+```powershell
+dbt run-operation check_idempotency --profiles-dir .
+```
+
+Current dev result: **24/24 pipeline models idempotent, max `row_delta` = 0**.
+
 Logging is gated on dbt's `execute` flag, so parse-time rendering stays silent
-and only real executions are logged. See `macros/logging.sql` and
+and only real executions are logged. See `macros/logging.sql`,
+`macros/observability.sql`, and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#48-logging-and-observability).
 
 ## Documentation coverage
 
 Every model and column has a description in its layer's `schema.yml`
-(`staging`, `silver`, `gold`), and `+persist_docs` publishes those descriptions
-to Unity Catalog. Tests are declared alongside the models they protect.
+(`staging`, `silver`, `gold`, `observability`), and `+persist_docs` publishes
+those descriptions to Unity Catalog. Tests are declared alongside the models
+they protect.
 
 ## Key design points
 
@@ -208,6 +278,9 @@ to Unity Catalog. Tests are declared alongside the models they protect.
   `reject_reason`.
 - **Tests encode intent.** Structural invariants fail the build; known dirty
   data warns.
+- **Every run is auditable and idempotency-checkable.** Model end rows record
+  `rows_read`, `rows_written` and a stable content hash; the
+  `observability.idempotency_check` view compares the latest two runs per model.
 - **No secrets in the repo.** `profiles.yml` reads the PAT from
   `DATABRICKS_TOKEN`.
 

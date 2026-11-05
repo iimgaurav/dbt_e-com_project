@@ -17,14 +17,14 @@ successful manual production run (see [DEPLOYMENT.md](DEPLOYMENT.md)).
 ### What a healthy run looks like
 
 ```
-Processed: 2 hooks | 24 models | 67 tests | 1 snapshot
-Summary:   94 total | 89 success | 5 warn
+Processed: 4 hooks | 26 models | 71 tests | 1 snapshot
+Summary:   102 total | 97 success | 5 warn
 Finished 'build' with 5 warnings
 ```
 
 - 0 errors
 - exactly 5 warnings (the documented ones in [DATA_QUALITY.md](DATA_QUALITY.md))
-- runtime well under the 45-minute CI timeout (local dev ≈ 45 s)
+- runtime well under the 45-minute CI timeout (local dev ≈ 2 min)
 
 ## 2. Running the pipeline
 
@@ -128,17 +128,51 @@ from dbt.silver.quarantine_records
 group by 1,2 order by n desc;
 ```
 
-### Idempotency check
+### Audit log and idempotency
 
-Run the build twice. The second run must produce the same row counts:
+The pipeline writes every run, model and step to
+`<catalog>.observability.pipeline_step_log`. The `end` row carries
+`rows_read`, `rows_written` and `content_hash`.
+
+```sql
+-- Latest model metrics
+select model_name, schema_name, rows_read, rows_written, content_hash, logged_at
+from dbt.observability.pipeline_step_log
+where step = 'end' and status = 'success'
+order by logged_at desc;
+
+-- Step timeline for the latest run
+select model_name, phase, step, status, rows_read, rows_written, detail
+from dbt.observability.pipeline_step_timeline
+where run_id = (select run_id from dbt.observability.pipeline_step_log
+                where step = 'run_end' order by logged_at desc limit 1)
+order by model_name, phase, logged_at;
+
+-- Idempotency verdict
+select model_name, previous_rows_written, latest_rows_written,
+       row_delta, content_unchanged, is_idempotent
+from dbt.observability.idempotency_check
+order by is_idempotent, model_name;
+```
+
+The CLI equivalent:
+
+```powershell
+dbt run-operation check_idempotency --profiles-dir .
+```
+
+Run the build twice to establish a baseline. The second run must produce the
+same row counts and content hashes:
 
 ```powershell
 dbt build --profiles-dir .
 dbt build --profiles-dir .
 ```
 
-Expected: identical counts, no duplicate keys. If counts grow, the merge key or
-the dedupe window is wrong.
+Expected: `is_idempotent = true` for all pipeline models and `row_delta = 0`.
+If a model is false, inspect the two `end` rows and diff the business columns.
+The content hash intentionally excludes `_ingest_ts`, `_loaded_at`,
+`detected_at` and `dbt_*`, so those changing is not a failure.
 
 ## 5. Troubleshooting
 
@@ -155,6 +189,9 @@ the dedupe window is wrong.
 | `read_files` path error | PowerShell rewrote `/Volumes/...` to backslashes | Use `dbfs:/Volumes/...` with `databricks fs`, or quote the path |
 | Build fails on `relationships_fct_sales_order_id` | `slv_orders` not rebuilt | `dbt build --select slv_orders+` |
 | Snapshot fails | `slv_stores` missing or empty | Rebuild silver first: `dbt build --select slv_stores+` |
+| `TABLE_OR_VIEW_NOT_FOUND observability.pipeline_step_log` | `on-run-start` hooks did not run, or the catalog is missing | Run a full `dbt build`; confirm `CREATE SCHEMA` privilege on the catalog |
+| `idempotency_check` is all NULL | Only one run has been observed | Run `dbt build` a second time, then re-query |
+| `ConcurrentAppendException` on the audit table | Parallel model threads appended at the same instant | Retry the run; Delta appends are safe to replay |
 
 ### Where the logs are
 
@@ -164,6 +201,9 @@ the dedupe window is wrong.
 | Rendered SQL per node | `target/run/` |
 | Compiled SQL | `target/compiled/` |
 | Run results (JSON) | `target/run_results.json` |
+| Audit table | `dbt.observability.pipeline_step_log` (prod: `dbt_prod.observability.pipeline_step_log`) |
+| Step timeline view | `dbt.observability.pipeline_step_timeline` |
+| Idempotency view | `dbt.observability.idempotency_check` |
 | Databricks job output | Job run UI → task `dbt_build` |
 
 ### Structured logs
@@ -182,7 +222,7 @@ dbt build --profiles-dir . 2>&1 | Select-String '\[sales_analytics\]'
 [sales_analytics] model=slv_orders step=reconcile detail=late-arriving window ...
 [sales_analytics] model=slv_orders step=final ... schema=silver
 [sales_analytics] model=slv_orders step=end ... schema=silver
-[sales_analytics] run=end total=92 success=87 warn=5 error=0 other=0
+[sales_analytics] run=end total=98 success=93 warn=5 error=0 other=0
 ```
 
 Useful filters:
@@ -237,6 +277,9 @@ the secret, redeploy.
 - [ ] SCD2 structural tests return 0 rows
 - [ ] Bronze `_ingest_ts` is fresh (< 24 h)
 - [ ] Gold row counts within ±20% of the 7-day average
+- [ ] `observability.idempotency_check` shows `is_idempotent = true` and
+      `row_delta = 0` for all pipeline models
+- [ ] The latest `pipeline_step_log` `run_end` row has `status = 'success'`
 
 ## 8. Change management
 

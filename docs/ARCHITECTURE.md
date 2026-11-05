@@ -268,11 +268,15 @@ consumers who never open the dbt repo.
 
 ### 4.8 Logging and observability
 
-Logging is implemented in `macros/logging.sql` and wired in `dbt_project.yml`:
+Logging has two sinks: greppable console/log lines and a Delta audit table.
+Both are wired in `dbt_project.yml`:
 
 ```yaml
-on-run-start: ["{{ log_run_start() }}"]
-on-run-end:   ["{{ log_run_end(results) }}"]
+on-run-start:
+  - "{{ create_audit_schema() }}"
+  - "{{ create_audit_table() }}"
+  - "{{ log_run_start() }}"
+on-run-end: ["{{ log_run_end(results) }}"]
 
 models:
   sales_analytics:
@@ -282,23 +286,27 @@ models:
 
 **Three levels**
 
-| Level | Emitted by | Example |
-|---|---|---|
-| Run | `on-run-start` / `on-run-end` | `run=end total=92 success=87 warn=5 error=0` |
-| Model | project-level pre/post hooks | `model=fct_sales step=start ... schema=gold` |
-| Step | inline `{{ log_step('...') }}` | `model=slv_orders step=reconcile detail=late-arriving window` |
+| Level | Emitted by | Audit row | Example |
+|---|---|---|---|
+| Run | `on-run-start` / `on-run-end` | `run_start` / `run_end` | `run=end total=98 success=93 warn=5 error=0` |
+| Model | project-level pre/post hooks | `start` / `end` | `model=fct_sales step=end ... schema=gold` |
+| Step | inline `{{ log_step('...') }}` | one row per step | `model=slv_orders step=reconcile detail=late-arriving window` |
 
 **Design details**
 
-- Each line is a stable, greppable key/value record prefixed with
+- Each console line is a stable, greppable key/value record prefixed with
   `[sales_analytics]`.
 - `log_step` prefers `this.schema` / `this.database` so the log shows where the
   data actually lands (`gold`), not the profile default (`dev`).
 - All logging is wrapped in `{% if execute %}`. dbt renders hooks once during
   parsing; without the guard every model would log before the run starts.
-- Hooks return `select 1` so they are valid SQL statements; the logging itself
-  happens at compile time and has no data side effects.
-- Hooks only apply to models. Snapshots and tests are covered by the run-level
+- Model start/end hooks return `INSERT` statements. The `end` row computes
+  `rows_read`, `rows_written` and `content_hash` in SQL against the just-built
+  relation.
+- Inline steps are written with `run_query()` while the model compiles. They are
+  additionally gated on `flags.WHICH in ('run', 'build')`, so `dbt parse` and
+  `dbt compile` never mutate the audit table.
+- Hooks apply to models. Snapshots and tests are covered by the run-level
   summary.
 
 **Following a run**
@@ -309,6 +317,40 @@ dbt build --profiles-dir . 2>&1 | Select-String '\[sales_analytics\]'
 
 The same lines are written to `logs/dbt.log`, so a CI artifact captures the
 full model/step timeline.
+
+### 4.9 Audit metrics and idempotency
+
+Every model `end` row stores:
+
+| Column | Meaning |
+|---|---|
+| `rows_read` | Sum of the direct parents' row counts. Source-less models (bronze `read_files`, `dim_date`) fall back to their own count. |
+| `rows_written` | `count(*)` of the model relation after materialisation. |
+| `content_hash` | `sum(hash(...))` over stable business columns. |
+
+`content_hash` deliberately excludes volatile audit columns: `_ingest_ts`,
+`_loaded_at`, `detected_at` and anything prefixed `dbt_`. Without this, a
+full-refresh table would hash differently on every run simply because its
+ingestion timestamp changed.
+
+Two views make the table usable:
+
+- **`observability.pipeline_step_timeline`** — orders each model's events
+  `start → inline steps → end` (phase 1/2/3) and attaches the model's
+  `rows_read` / `rows_written` to every step. Inline steps are physically
+  inserted during compilation, so `logged_at` alone would sort them before
+  `start`; the phase column fixes the logical order.
+- **`observability.idempotency_check`** — compares the latest two successful
+  `end` rows per model. `is_idempotent` is true when both the row count and the
+  content hash are unchanged. `NULL` means only one run has been observed.
+
+The audit table itself is created by hooks, not by a dbt model, because the
+pre/post hooks must append to it before and after each model. It is exposed to
+the dbt graph as a source (`models/observability/sources.yml`).
+
+Current dev result after two consecutive builds: **24/24 pipeline models
+idempotent, `row_delta = 0`**. Observability models are excluded from the
+comparison because their output changes as the log grows.
 
 ## 5. Naming conventions
 

@@ -428,6 +428,75 @@ dbt `check` snapshot on `slv_stores` (`unique_key = store_id`,
 
 ---
 
+## Observability — `<catalog>.observability`
+
+### `pipeline_step_log` — append-only table
+
+Created by `on-run-start` hooks, not by a dbt model. One row per run event,
+model start/end, and inline model step.
+
+| Column | Type | Description |
+|---|---|---|
+| `run_id` | STRING | dbt `invocation_id`; groups all rows from one invocation |
+| `logged_at` | TIMESTAMP | When the event row was written |
+| `target_name` | STRING | dbt target (`dev` / `prod`) |
+| `catalog_name` | STRING | Catalog the model lives in |
+| `schema_name` | STRING | Schema the model lives in |
+| `model_name` | STRING | Model name, or `__run__` for run-level rows |
+| `materialization` | STRING | `table` / `view` / `incremental` / `run` |
+| `step` | STRING | `run_start`, `run_end`, `start`, `end`, or an inline step |
+| `status` | STRING | `started`, `success`, `error`, `step` |
+| `rows_read` | BIGINT | Sum of direct parent row counts (logical inputs) |
+| `rows_written` | BIGINT | `count(*)` of the model relation after the run |
+| `content_hash` | STRING | Stable-column fingerprint used for idempotency |
+| `detail` | STRING | Free-form context (file, window, run summary) |
+
+### `pipeline_step_timeline` — view
+
+Orders each model's events `start → inline steps → end` and attaches the
+model's `rows_read` / `rows_written` to every step.
+
+| Column | Type | Description |
+|---|---|---|
+| `run_id` | STRING | Invocation id |
+| `model_name` | STRING | Pipeline model |
+| `schema_name` | STRING | Layer schema |
+| `materialization` | STRING | Materialisation |
+| `step` | STRING | `start`, `end`, or inline step |
+| `status` | STRING | Event status |
+| `logged_at` | TIMESTAMP | Event time |
+| `phase` | INT | 1 = start, 2 = inline step, 3 = end |
+| `rows_read` | BIGINT | Model-level logical input rows |
+| `rows_written` | BIGINT | Model-level output rows |
+| `content_hash` | STRING | Model-level fingerprint |
+| `detail` | STRING | Step context |
+
+### `idempotency_check` — view
+
+Compares the latest two successful `end` rows per model.
+
+| Column | Type | Description |
+|---|---|---|
+| `model_name` | STRING | Pipeline model |
+| `schema_name` | STRING | Layer schema |
+| `materialization` | STRING | Materialisation |
+| `previous_run_id` | STRING | Previous invocation |
+| `latest_run_id` | STRING | Latest invocation |
+| `previous_logged_at` | TIMESTAMP | Previous end time |
+| `latest_logged_at` | TIMESTAMP | Latest end time |
+| `previous_rows_read` | BIGINT | Previous logical inputs |
+| `latest_rows_read` | BIGINT | Latest logical inputs |
+| `previous_rows_written` | BIGINT | Previous output rows |
+| `latest_rows_written` | BIGINT | Latest output rows |
+| `row_delta` | BIGINT | `latest - previous` (0 when idempotent) |
+| `previous_content_hash` | STRING | Previous fingerprint |
+| `latest_content_hash` | STRING | Latest fingerprint |
+| `content_unchanged` | BOOLEAN | Business data unchanged |
+| `row_count_unchanged` | BOOLEAN | Row count unchanged |
+| `is_idempotent` | BOOLEAN | Both unchanged; NULL when only one run observed |
+
+---
+
 ## Referential summary
 
 ```

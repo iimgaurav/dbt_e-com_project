@@ -22,9 +22,14 @@ vars:
   raw_volume_path: "{{ env_var('DBT_RAW_VOLUME_PATH', '/Volumes/dbt/raw/sales_analytics_raw') }}"
   # Re-read this many days before the target watermark on every incremental run
   late_arriving_lookback_days: 3
+  # Table-based audit log location (see macros/observability.sql)
+  audit_schema: observability
+  audit_table: pipeline_step_log
 
-# Structured run-level logging (see macros/logging.sql)
+# Structured logging + audit table (see macros/logging.sql / observability.sql)
 on-run-start:
+  - "{{ create_audit_schema() }}"
+  - "{{ create_audit_table() }}"
   - "{{ log_run_start() }}"
 on-run-end:
   - "{{ log_run_end(results) }}"
@@ -56,3 +61,8 @@ models:
 
       dim_customers_scd2:
         +materialized: view
+
+    observability:
+      +materialized: view
+      +schema: "{{ var('audit_schema', 'observability') }}"
+      +tags: ['observability']

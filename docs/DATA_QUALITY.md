@@ -16,7 +16,7 @@ and documented**; everything else fails hard.
 
 ## 2. Test inventory
 
-`dbt build` runs **67 tests** (63 generic + 4 singular).
+`dbt build` runs **71 tests** (67 generic + 4 singular).
 
 ### Generic tests (`schema.yml`)
 
@@ -41,7 +41,7 @@ dimension is usable for as-of joins.
 
 ## 3. The 5 expected warnings
 
-Current build: **75 pass, 5 warn, 0 error**. Each warning is a known property of
+Current build: **97 pass, 5 warn, 0 error**. Each warning is a known property of
 the practice dataset:
 
 | # | Test | Count | Explanation |
@@ -149,17 +149,21 @@ Recommended production monitors (not yet automated as alerts):
 | SCD2 duplicate current | `select customer_id from gold.dim_customers_scd2 where is_current group by 1 having count(*) > 1` | any row |
 | Freshness | `select max(_ingest_ts) from bronze.stg_orders` | older than 24h |
 | Row-count drop | compare each gold table to its 7-day average | −20% |
+| Idempotency regression | `select count(*) from dbt.observability.idempotency_check where is_idempotent = false` | > 0 |
+| Row-count drift | `select max(abs(row_delta)) from dbt.observability.idempotency_check` | > 0 |
 
 ## 7. Current baseline (dev catalog)
 
 | Metric | Value |
 |---|---:|
-| Models | 24 |
-| Tests | 67 (63 generic + 4 singular) |
-| Pass | 89 |
+| Models | 26 (24 pipeline + 2 observability) |
+| Tests | 71 (67 generic + 4 singular) |
+| Pass | 97 |
 | Warn | 5 |
 | Error | 0 |
 | Quarantine rows | 165 |
+| Idempotent pipeline models | 24 / 24 |
+| Max idempotency `row_delta` | 0 |
 | `fct_sales` UNKNOWN customer SK | 43 / 2,957 (1.45%) |
 | SCD2 versions | 315 across 303 customers (12 customers have 2 versions) |
 | SCD2 structural test failures | 0 |

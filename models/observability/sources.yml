@@ -1,0 +1,47 @@
+version: 2
+
+# The audit table is created by on-run-start hooks (macros/observability.sql),
+# not by a dbt model, because pre/post hooks must be able to append to it before
+# and after every model. Declaring it as a source lets the observability view
+# reference it with ref-safe lineage.
+
+sources:
+  - name: observability
+    description: >
+      Append-only pipeline audit log written by the project hooks. One row per
+      run event, model start/end, and inline model step.
+    database: "{{ target.catalog }}"
+    schema: "{{ var('audit_schema', 'observability') }}"
+    tables:
+      - name: pipeline_step_log
+        description: >
+          Append-only audit log. `end` rows carry rows_read, rows_written and
+          content_hash; the idempotency_check view compares the latest two
+          `end` rows per model.
+        columns:
+          - name: run_id
+            description: "dbt invocation_id; groups every row from one invocation."
+          - name: logged_at
+            description: "Timestamp the event row was written."
+          - name: target_name
+            description: "dbt target (dev / prod)."
+          - name: catalog_name
+            description: "Unity Catalog catalog the model lives in."
+          - name: schema_name
+            description: "Schema the model lives in (bronze / silver / gold)."
+          - name: model_name
+            description: "Model name, or __run__ for run-level rows."
+          - name: materialization
+            description: "table / view / incremental / run."
+          - name: step
+            description: "start, end, run_start, run_end, or an inline step name."
+          - name: status
+            description: "started / success / error / step."
+          - name: rows_read
+            description: "Sum of direct parent row counts (logical inputs)."
+          - name: rows_written
+            description: "count(*) of the model relation after the run."
+          - name: content_hash
+            description: "Stable-column fingerprint used for idempotency checks."
+          - name: detail
+            description: "Free-form context (file name, window, run summary)."

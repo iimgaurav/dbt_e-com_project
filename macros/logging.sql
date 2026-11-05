@@ -1,26 +1,26 @@
 {#
     Structured, model-level logging.
 
-    Every model automatically emits a `start` and `end` line through the
-    project-level pre/post hooks in dbt_project.yml. Models with multiple
-    logical stages also call log_step() inline, e.g.:
+    Two sinks receive every event:
 
-        {{ log_step('cleaned') }}
+      1. stdout / logs/dbt.log  - greppable `[sales_analytics] ...` lines
+      2. <catalog>.observability.pipeline_step_log - queryable audit table
 
-    Output is a single greppable line per event:
+    Levels:
 
-        [sales_analytics] model=slv_orders step=cleaned target=dev catalog=dbt schema=silver
+      run    on-run-start / on-run-end   model_name = '__run__'
+      model  project pre/post hooks      start + end rows (end carries metrics)
+      step   inline {{ log_step('...') }} rows written via run_query()
 
-    Follow one run with:
-
-        dbt build --profiles-dir . 2>&1 | Select-String '\[sales_analytics\]'
+    All logging is gated on `{% if execute %}` so dbt's parse pass is silent.
+    Inline table writes are additionally gated on run/build so `dbt compile`
+    never mutates the audit table.
 #}
 
 
-{#- Emit one structured log line for a model step. -#}
-{% macro log_step(step, model_name=none, detail=none) -%}
+{#- Console-only log line. -#}
+{% macro log_line(step, detail=none, model_name=none) -%}
     {%- set name = model_name if model_name is not none else model.name -%}
-    {#- Prefer the resolved relation's schema/catalog so logs match where data lands. -#}
     {%- set schema_name = target.schema -%}
     {%- set catalog_name = target.catalog -%}
     {%- if this is defined -%}
@@ -36,43 +36,76 @@
     {%- if detail is not none -%}
         {%- set msg = msg ~ ' detail=' ~ detail -%}
     {%- endif -%}
-    {#- `execute` is False while dbt parses; only log real executions. -#}
     {%- if execute -%}
         {{ log(msg, info=true) }}
     {%- endif -%}
 {%- endmacro %}
 
 
-{#- Pre-hook: logs the start of every model. Returns valid SQL for the hook. -#}
+{#- Inline step: console line + audit-table row (run/build only). -#}
+{% macro log_step(step, model_name=none, detail=none) -%}
+    {{ log_line(step, detail=detail, model_name=model_name) }}
+    {%- if execute and flags.WHICH in ['run', 'build'] and model is defined -%}
+        {%- do insert_step_event(step, detail=detail, model_name=model_name) -%}
+    {%- endif -%}
+{%- endmacro %}
+
+
+{#- Pre-hook: console line + audit `start` row. -#}
 {% macro log_model_start() -%}
-    {{ log_step('start') }}
-    select 1
+    {{ log_line('start') }}
+    {%- if execute -%}
+        {{ insert_model_event('start', 'started') }}
+    {%- else -%}
+        select 1
+    {%- endif -%}
 {%- endmacro %}
 
 
-{#- Post-hook: logs the successful completion of every model. -#}
+{#- Post-hook: console line + audit `end` row with metrics. -#}
 {% macro log_model_end() -%}
-    {{ log_step('end') }}
-    select 1
+    {{ log_line('end') }}
+    {%- if execute -%}
+        {{ insert_model_event('end', 'success') }}
+    {%- else -%}
+        select 1
+    {%- endif -%}
 {%- endmacro %}
 
 
-{#- on-run-start: one line per invocation. -#}
+{#- on-run-start: console line + audit `run_start` row. -#}
 {% macro log_run_start() -%}
     {%- if execute -%}
-    {{ log(
-        '[' ~ project_name ~ '] run=start'
-        ~ ' target=' ~ target.name
-        ~ ' catalog=' ~ target.catalog
-        ~ ' ts=' ~ run_started_at,
-        info=true
-    ) }}
+        {{ log(
+            '[' ~ project_name ~ '] run=start'
+            ~ ' target=' ~ target.name
+            ~ ' catalog=' ~ target.catalog
+            ~ ' ts=' ~ run_started_at,
+            info=true
+        ) }}
+insert into {{ audit_relation() }}
+select
+    '{{ invocation_id }}',
+    current_timestamp(),
+    '{{ target.name }}',
+    '{{ target.catalog }}',
+    '{{ var('audit_schema', 'observability') }}',
+    '__run__',
+    'run',
+    'run_start',
+    'started',
+    cast(null as bigint),
+    cast(null as bigint),
+    cast(null as string),
+    {{ sql_str('run started at ' ~ run_started_at) }}
+    {%- else -%}
+        select 1
     {%- endif -%}
-    select 1
 {%- endmacro %}
 
 
-{#- on-run-end: aggregate status counts for the whole invocation. -#}
+{#- on-run-end: console summary + audit `run_end` row, plus an `error`
+    end-row for any model that failed before its post-hook could run. -#}
 {% macro log_run_end(results) -%}
     {%- if results | length == 0 -%}
         {#- dbt renders hooks once during parsing; stay silent until a real run. -#}
@@ -100,6 +133,34 @@
         ~ ' other=' ~ ns.other,
         info=true
     ) }}
-    select 1
+    {%- set detail = 'total=' ~ total
+        ~ ' success=' ~ ns.success
+        ~ ' warn=' ~ ns.warn
+        ~ ' error=' ~ ns.error
+        ~ ' other=' ~ ns.other -%}
+    {%- set rows = [] -%}
+    {%- do rows.append(
+        "select '" ~ invocation_id ~ "' as run_id, current_timestamp() as logged_at, "
+        ~ sql_str(target.name) ~ " as target_name, " ~ sql_str(target.catalog) ~ " as catalog_name, "
+        ~ sql_str(var('audit_schema', 'observability')) ~ " as schema_name, "
+        ~ "'__run__' as model_name, 'run' as materialization, 'run_end' as step, "
+        ~ sql_str('success' if ns.error == 0 else 'error') ~ " as status, "
+        ~ "cast(null as bigint) as rows_read, cast(null as bigint) as rows_written, "
+        ~ "cast(null as string) as content_hash, " ~ sql_str(detail) ~ " as detail"
+    ) -%}
+    {%- for r in results -%}
+        {%- if r.node.resource_type == 'model' and r.status in ('error', 'fail') -%}
+            {%- do rows.append(
+                "select '" ~ invocation_id ~ "', current_timestamp(), "
+                ~ sql_str(target.name) ~ ", " ~ sql_str(target.catalog) ~ ", "
+                ~ sql_str(r.node.schema) ~ ", " ~ sql_str(r.node.name) ~ ", "
+                ~ sql_str(r.node.config.materialized | string) ~ ", 'end', 'error', "
+                ~ "cast(null as bigint), cast(null as bigint), cast(null as string), "
+                ~ sql_str('run failed with status ' ~ r.status)
+            ) -%}
+        {%- endif -%}
+    {%- endfor -%}
+insert into {{ audit_relation() }}
+{{ rows | join('\nunion all\n') }}
     {%- endif -%}
 {%- endmacro %}

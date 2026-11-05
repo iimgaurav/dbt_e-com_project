@@ -1,0 +1,83 @@
+version: 2
+
+models:
+  - name: idempotency_check
+    description: >
+      Compares the latest two successful `end` rows per pipeline model in
+      observability.pipeline_step_log. `is_idempotent` is true when both the row
+      count and the stable-column content hash are unchanged between runs.
+      NULL means the model has only one observed run.
+    columns:
+      - name: model_name
+        description: "Pipeline model being compared."
+        tests:
+          - not_null
+      - name: schema_name
+        description: "Schema the model lives in (bronze / silver / gold)."
+      - name: materialization
+        description: "table / view / incremental."
+      - name: previous_run_id
+        description: "invocation_id of the previous observed run."
+      - name: latest_run_id
+        description: "invocation_id of the latest observed run."
+      - name: previous_logged_at
+        description: "When the previous end row was written."
+      - name: latest_logged_at
+        description: "When the latest end row was written."
+      - name: previous_rows_read
+        description: "Logical input rows in the previous run."
+      - name: latest_rows_read
+        description: "Logical input rows in the latest run."
+      - name: previous_rows_written
+        description: "Output rows in the previous run."
+      - name: latest_rows_written
+        description: "Output rows in the latest run."
+      - name: row_delta
+        description: "latest_rows_written - previous_rows_written (0 when idempotent)."
+      - name: previous_content_hash
+        description: "Stable-column fingerprint from the previous run."
+      - name: latest_content_hash
+        description: "Stable-column fingerprint from the latest run."
+      - name: content_unchanged
+        description: "True when the business-content fingerprint is unchanged."
+      - name: row_count_unchanged
+        description: "True when the output row count is unchanged."
+      - name: is_idempotent
+        description: "True when both row count and content hash are unchanged."
+
+  - name: pipeline_step_timeline
+    description: >
+      Ordered step timeline per model and invocation. Inline steps are placed
+      after `start` and before `end` (phase 1/2/3), and every step carries the
+      model's rows_read and rows_written from the matching successful `end` row.
+    columns:
+      - name: run_id
+        description: "dbt invocation_id for the run."
+        tests:
+          - not_null
+      - name: model_name
+        description: "Pipeline model."
+        tests:
+          - not_null
+      - name: schema_name
+        description: "Schema the model lives in (bronze / silver / gold)."
+      - name: materialization
+        description: "table / view / incremental."
+      - name: step
+        description: "start, end, or an inline step name."
+        tests:
+          - not_null
+      - name: status
+        description: "started / success / error / step."
+      - name: logged_at
+        description: "When the event row was written."
+      - name: phase
+        description: "Logical order: 1 = start, 2 = inline step, 3 = end."
+      - name: rows_read
+        description: "Model-level logical input rows (attached to every step)."
+      - name: rows_written
+        description: "Model-level output rows (attached to every step)."
+      - name: content_hash
+        description: "Model-level stable-column fingerprint."
+      - name: detail
+        description: "Free-form step context."
