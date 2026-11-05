@@ -1,0 +1,212 @@
+version: 2
+
+# Bronze layer: faithful copies of the raw CSVs. Every source column is STRING
+# because files are read with inferColumnTypes => false. Only the two audit
+# columns are typed. Tests here are warnings: bronze intentionally preserves
+# dirty source values so they can be inspected and quarantined downstream.
+
+models:
+  - name: stg_orders
+    description: >
+      Bronze copy of orders_raw.csv. One row per source row (duplicates are
+      preserved). Contains raw status variants, mixed date formats and text
+      amounts; cleaned in silver.slv_orders.
+    columns:
+      - name: order_id
+        description: "Order business key (raw)."
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: customer_id
+        description: "Customer business key (raw); may be blank or orphaned."
+      - name: order_date
+        description: "Raw order date in one of several formats."
+      - name: order_status
+        description: "Raw order status (mixed case, e.g. Delivered, COMPLETE, CANCELED)."
+      - name: channel
+        description: "Raw sales channel (Online, Store, App, ...)."
+      - name: store_id
+        description: "Raw store business key; blank for non-store orders."
+      - name: total_amount
+        description: "Raw order total; may include currency symbols and separators."
+      - name: discount_pct
+        description: "Raw discount percentage."
+      - name: created_at
+        description: "Raw creation timestamp."
+      - name: last_modified_at
+        description: "Raw last-update timestamp; drives the silver watermark."
+      - name: _ingest_ts
+        description: "Timestamp the row was read from the volume."
+      - name: _source_file
+        description: "Volume path the row was read from."
+
+  - name: stg_order_items
+    description: >
+      Bronze copy of order_items_raw.csv. quantity may be a word ("two"),
+      unit_price/line_total may contain currency text.
+    columns:
+      - name: order_item_id
+        description: "Order-line business key (raw)."
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: order_id
+        description: "Parent order key (raw)."
+      - name: product_id
+        description: "Product key (raw)."
+      - name: quantity
+        description: "Raw quantity; may be numeric text or a word."
+      - name: unit_price
+        description: "Raw unit price."
+      - name: line_total
+        description: "Raw line total; may disagree with quantity * unit_price."
+      - name: _ingest_ts
+        description: "Timestamp the row was read from the volume."
+      - name: _source_file
+        description: "Volume path the row was read from."
+
+  - name: stg_customers
+    description: >
+      Bronze copy of customers_raw.csv. Multiple versions per customer are
+      preserved; updated_at is the SCD2 valid_from source.
+    columns:
+      - name: customer_id
+        description: "Customer business key (raw)."
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: first_name
+        description: "Raw first name (PII)."
+      - name: last_name
+        description: "Raw last name (PII)."
+      - name: email
+        description: "Raw email address (PII)."
+      - name: phone
+        description: "Raw phone number (PII)."
+      - name: city
+        description: "Raw city."
+      - name: state
+        description: "Raw state."
+      - name: country
+        description: "Raw country."
+      - name: signup_date
+        description: "Raw signup date in one of several formats."
+      - name: customer_segment
+        description: "Raw customer segment."
+      - name: updated_at
+        description: "Raw last-update timestamp; becomes SCD2 valid_from."
+      - name: _ingest_ts
+        description: "Timestamp the row was read from the volume."
+      - name: _source_file
+        description: "Volume path the row was read from."
+
+  - name: stg_products
+    description: >
+      Bronze copy of products_raw.csv. unit_price/cost_price may contain text
+      such as "Rs. 1,299"; is_active uses mixed boolean encodings.
+    columns:
+      - name: product_id
+        description: "Product business key (raw)."
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: product_name
+        description: "Raw product name."
+      - name: brand
+        description: "Raw brand."
+      - name: category
+        description: "Raw category; may be blank."
+      - name: unit_price
+        description: "Raw selling price."
+      - name: cost_price
+        description: "Raw cost price."
+      - name: currency
+        description: "Raw currency code."
+      - name: is_active
+        description: "Raw active flag (Y/N/true/false/1/0)."
+      - name: created_date
+        description: "Raw creation date."
+      - name: _ingest_ts
+        description: "Timestamp the row was read from the volume."
+      - name: _source_file
+        description: "Volume path the row was read from."
+
+  - name: stg_stores
+    description: >
+      Bronze copy of stores_raw.csv. Store names carry trailing whitespace and
+      regions use mixed case.
+    columns:
+      - name: store_id
+        description: "Store business key (raw)."
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: store_name
+        description: "Raw store name."
+      - name: region
+        description: "Raw region."
+      - name: city
+        description: "Raw city."
+      - name: opened_date
+        description: "Raw opening date."
+      - name: _ingest_ts
+        description: "Timestamp the row was read from the volume."
+      - name: _source_file
+        description: "Volume path the row was read from."
+
+  - name: stg_payments
+    description: >
+      Bronze copy of payments_raw.csv. Multiple rows per order are valid
+      (retries, split payments, refunds).
+    columns:
+      - name: payment_id
+        description: "Payment attempt business key (raw)."
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: order_id
+        description: "Parent order key (raw)."
+      - name: payment_date
+        description: "Raw payment date."
+      - name: payment_method
+        description: "Raw payment method (mixed casing and separators)."
+      - name: amount
+        description: "Raw payment amount."
+      - name: payment_status
+        description: "Raw payment status."
+      - name: transaction_ref
+        description: "Raw provider transaction reference."
+      - name: _ingest_ts
+        description: "Timestamp the row was read from the volume."
+      - name: _source_file
+        description: "Volume path the row was read from."
+
+  - name: stg_returns
+    description: >
+      Bronze copy of returns_raw.csv. reason is free text with many variants;
+      refund_amount can exceed the original line total.
+    columns:
+      - name: return_id
+        description: "Return business key (raw)."
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: order_item_id
+        description: "Returned order-line key (raw)."
+      - name: return_date
+        description: "Raw return date."
+      - name: reason
+        description: "Raw free-text return reason."
+      - name: refund_amount
+        description: "Raw refund amount."
+      - name: _ingest_ts
+        description: "Timestamp the row was read from the volume."
+      - name: _source_file
+        description: "Volume path the row was read from."

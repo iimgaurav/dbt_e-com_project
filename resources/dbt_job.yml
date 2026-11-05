@@ -1,0 +1,32 @@
+resources:
+  jobs:
+    sales_analytics_dbt:
+      name: sales_analytics_dbt_${bundle.target}
+      max_concurrent_runs: 1
+
+      schedule:
+        quartz_cron_expression: "0 30 2 * * ?" # 02:30 daily
+        timezone_id: Asia/Kolkata
+        pause_status: PAUSED # unpause after the first successful manual run
+
+      email_notifications:
+        on_failure:
+          - k.gaurav653@gmail.com
+
+      # Serverless environment for the dbt task
+      environments:
+        - environment_key: default
+          spec:
+            client: "2"
+
+      tasks:
+        - task_key: dbt_build
+          environment_key: default
+          dbt_task:
+            project_directory: .
+            commands:
+              - dbt deps
+              - dbt build --target ${bundle.target}
+            warehouse_id: ${var.warehouse_id}
+            catalog: ${var.catalog}
+            schema: ${var.schema}

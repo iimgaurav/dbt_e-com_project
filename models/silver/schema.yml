@@ -1,0 +1,217 @@
+version: 2
+
+# Silver layer: typed, canonical, deduplicated. One row per business key.
+# Key tests are hard failures; accepted-value tests on known-dirty source
+# domains warn (see docs/DATA_QUALITY.md).
+
+models:
+  - name: slv_orders
+    description: >
+      Cleaned orders, deduplicated to the newest version per order_id.
+      Incremental merge with a late-arriving window and target reconciliation.
+    columns:
+      - name: order_id
+        description: "Order business key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: "Customer business key; may be orphaned (see quarantine_records)."
+      - name: order_date
+        description: "Parsed order date."
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: order_status
+        description: "Canonical upper-cased status."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['DELIVERED', 'SHIPPED', 'PROCESSING', 'PENDING', 'CANCELLED', 'RETURNED']
+              config:
+                severity: warn
+      - name: channel
+        description: "Canonical upper-cased sales channel."
+      - name: store_id
+        description: "Store key; NULL for non-store orders."
+      - name: total_amount
+        description: "Parsed order total."
+      - name: discount_pct
+        description: "Parsed discount percentage."
+      - name: created_at
+        description: "Parsed creation timestamp."
+      - name: last_modified_at
+        description: "Parsed last-update timestamp; incremental watermark."
+      - name: _ingest_ts
+        description: "Timestamp the source row was read from the volume."
+      - name: _source_file
+        description: "Volume path the row was read from."
+
+  - name: slv_order_items
+    description: "Cleaned order lines with numeric quantity and parsed prices."
+    columns:
+      - name: order_item_id
+        description: "Order-line business key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: order_id
+        description: "Parent order key."
+      - name: product_id
+        description: "Product key; may be orphaned."
+      - name: quantity
+        description: "Integer quantity; word forms mapped (one..five), invalid values default to 1."
+        tests:
+          - not_null
+      - name: unit_price
+        description: "Parsed unit price."
+      - name: line_total
+        description: "Parsed line total as supplied by the source."
+
+  - name: slv_customers
+    description: "Latest customer version per customer (Type-1 feed for gold)."
+    columns:
+      - name: customer_id
+        description: "Customer business key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: first_name
+        description: "Trimmed first name (PII)."
+      - name: last_name
+        description: "Trimmed last name (PII)."
+      - name: email
+        description: "Lower-cased email (PII)."
+      - name: phone
+        description: "Trimmed phone number (PII)."
+      - name: city
+        description: "Trimmed city."
+      - name: state
+        description: "Upper-cased state."
+      - name: country
+        description: "Upper-cased country."
+      - name: signup_date
+        description: "Parsed signup date."
+      - name: customer_segment
+        description: "Upper-cased customer segment."
+
+  - name: slv_products
+    description: "Cleaned product catalogue with parsed prices and boolean active flag."
+    columns:
+      - name: product_id
+        description: "Product business key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: product_name
+        description: "Trimmed product name."
+      - name: brand
+        description: "Trimmed brand."
+      - name: category
+        description: "Init-capped category; 'Unassigned' when missing."
+      - name: unit_price
+        description: "Parsed selling price."
+      - name: cost_price
+        description: "Parsed cost price."
+      - name: currency
+        description: "Upper-cased currency; defaults to INR."
+      - name: is_active
+        description: "Parsed boolean active flag."
+        tests:
+          - not_null
+      - name: created_date
+        description: "Parsed creation date."
+
+  - name: slv_stores
+    description: "Cleaned store reference data."
+    columns:
+      - name: store_id
+        description: "Store business key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: store_name
+        description: "Trimmed store name."
+      - name: city
+        description: "Trimmed city."
+      - name: region
+        description: "Upper-cased region."
+      - name: opened_date
+        description: "Parsed opening date."
+
+  - name: slv_payments
+    description: "Payment attempts with canonical method and status values."
+    columns:
+      - name: payment_id
+        description: "Payment attempt key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: order_id
+        description: "Parent order key; may be orphaned."
+      - name: payment_date
+        description: "Parsed payment date."
+      - name: payment_method
+        description: "Canonical payment method."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['UPI', 'CREDIT CARD', 'DEBIT CARD', 'COD', 'NET BANKING', 'WALLET', 'UNKNOWN']
+              config:
+                severity: warn
+      - name: amount
+        description: "Parsed payment amount."
+      - name: payment_status
+        description: "Canonical payment status."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['SUCCESS', 'FAILED', 'PENDING', 'REFUNDED', 'UNKNOWN']
+              config:
+                severity: warn
+      - name: transaction_ref
+        description: "Provider reference; NULL when blank."
+
+  - name: slv_returns
+    description: "Returned order lines with canonical reason values."
+    columns:
+      - name: return_id
+        description: "Return business key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: order_item_id
+        description: "Returned order-line key; may be orphaned."
+      - name: return_date
+        description: "Parsed return date."
+      - name: reason
+        description: "Canonical return reason."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['DAMAGED', 'WRONG ITEM', 'SIZE ISSUE', 'CHANGED MIND', 'DEFECTIVE', 'NOT AS DESCRIBED', 'UNKNOWN']
+              config:
+                severity: warn
+      - name: refund_amount
+        description: "Parsed refund amount."
+
+  - name: quarantine_records
+    description: >
+      Rows that violate a data-quality invariant, with the machine-readable
+      reject_reason. Long format: one row per failed rule per record.
+    columns:
+      - name: source_table
+        description: "Silver domain that failed ('orders', 'order_items', 'payments', 'returns')."
+        tests:
+          - not_null
+      - name: record_id
+        description: "Business key of the offending row."
+        tests:
+          - not_null
+      - name: reject_reason
+        description: "Rule name; see docs/DATA_QUALITY.md for the full catalogue."
+        tests:
+          - not_null
+      - name: detected_at
+        description: "Timestamp the check ran."

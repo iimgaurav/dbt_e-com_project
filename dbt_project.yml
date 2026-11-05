@@ -1,0 +1,58 @@
+name: 'sales_analytics'
+version: '1.0.0'
+config-version: 2
+
+profile: 'sales_analytics'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+snapshot-paths: ["snapshots"]
+analysis-paths: ["analyses"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+  - "logs"
+
+vars:
+  # Unity Catalog volume holding the raw CSVs (override per environment)
+  raw_volume_path: "{{ env_var('DBT_RAW_VOLUME_PATH', '/Volumes/dbt/raw/sales_analytics_raw') }}"
+  # Re-read this many days before the target watermark on every incremental run
+  late_arriving_lookback_days: 3
+
+# Structured run-level logging (see macros/logging.sql)
+on-run-start:
+  - "{{ log_run_start() }}"
+on-run-end:
+  - "{{ log_run_end(results) }}"
+
+models:
+  sales_analytics:
+    +persist_docs:
+      relation: true
+      columns: true
+
+    # Model-level logging: every model logs start/end automatically.
+    +pre-hook: "{{ log_model_start() }}"
+    +post-hook: "{{ log_model_end() }}"
+
+    staging:
+      +materialized: table
+      +schema: bronze
+      +tags: ['bronze']
+
+    silver:
+      +materialized: table
+      +schema: silver
+      +tags: ['silver']
+
+    gold:
+      +materialized: table
+      +schema: gold
+      +tags: ['gold']
+
+      dim_customers_scd2:
+        +materialized: view

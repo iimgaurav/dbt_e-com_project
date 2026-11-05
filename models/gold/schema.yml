@@ -1,0 +1,333 @@
+version: 2
+
+# Gold layer: star schema for BI. Every model and column is documented so that
+# `+persist_docs` can publish the descriptions to Unity Catalog.
+
+models:
+  - name: dim_customers_scd2
+    description: >
+      Type-2 customer dimension. One row per customer version, derived from the
+      insert-only history table. valid_from = source updated_at; valid_to = the
+      next version's valid_from (9999-12-31 for the open row). Late-arriving
+      versions need no close-out UPDATE.
+    columns:
+      - name: customer_sk
+        description: "Surrogate key: md5(customer_id || valid_from)."
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: "Natural customer key."
+        tests:
+          - not_null
+      - name: first_name
+        description: "Customer first name at this version (PII)."
+      - name: last_name
+        description: "Customer last name at this version (PII)."
+      - name: full_name
+        description: "first_name concatenated with last_name (PII)."
+      - name: email
+        description: "Email at this version (PII)."
+      - name: phone
+        description: "Phone at this version (PII)."
+      - name: city
+        description: "City at this version."
+      - name: state
+        description: "State at this version."
+      - name: country
+        description: "Country at this version."
+      - name: signup_date
+        description: "Signup date."
+      - name: customer_segment
+        description: "Segment at this version."
+      - name: version_number
+        description: "1-based version number ordered by valid_from."
+      - name: valid_from
+        description: "Version start timestamp (inclusive)."
+        tests:
+          - not_null
+      - name: valid_to
+        description: "Version end timestamp (exclusive); 9999-12-31 for the current row."
+      - name: is_current
+        description: "True for the open version."
+        tests:
+          - not_null
+      - name: row_hash
+        description: "md5 of the version attributes, for change detection."
+      - name: _loaded_at
+        description: "Timestamp this version was first observed."
+
+  - name: dim_customers_history
+    description: >
+      Insert-only SCD2 version history, incrementally merged on
+      (customer_id, valid_from). Append-only: windows are derived downstream.
+    columns:
+      - name: customer_id
+        description: "Customer natural key. Part of the version key."
+        tests:
+          - not_null
+      - name: first_name
+        description: "Customer first name (PII)."
+      - name: last_name
+        description: "Customer last name (PII)."
+      - name: email
+        description: "Email (PII)."
+      - name: phone
+        description: "Phone (PII)."
+      - name: city
+        description: "City."
+      - name: state
+        description: "State."
+      - name: country
+        description: "Country."
+      - name: signup_date
+        description: "Signup date."
+      - name: customer_segment
+        description: "Customer segment."
+      - name: valid_from
+        description: "Version start, from the source updated_at. Part of the version key."
+        tests:
+          - not_null
+      - name: row_hash
+        description: "md5 of the version attributes."
+      - name: _loaded_at
+        description: "Timestamp this version was first observed."
+
+  - name: dim_customers
+    description: "Type-1 current-state customer dimension for operational reporting."
+    columns:
+      - name: customer_id
+        description: "Customer natural key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: first_name
+        description: "First name (PII)."
+      - name: last_name
+        description: "Last name (PII)."
+      - name: full_name
+        description: "First name concatenated with last name (PII)."
+      - name: email
+        description: "Email (PII)."
+      - name: phone
+        description: "Phone (PII)."
+      - name: city
+        description: "City."
+      - name: state
+        description: "State."
+      - name: country
+        description: "Country."
+      - name: signup_date
+        description: "Signup date."
+      - name: customer_segment
+        description: "Customer segment."
+
+  - name: dim_products
+    description: "Product dimension with unit margin."
+    columns:
+      - name: product_id
+        description: "Product natural key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: product_name
+        description: "Product name."
+      - name: brand
+        description: "Brand."
+      - name: category
+        description: "Product category."
+      - name: unit_price
+        description: "Selling price."
+      - name: cost_price
+        description: "Cost price."
+      - name: margin_amount
+        description: "unit_price - cost_price."
+      - name: currency
+        description: "Currency code."
+      - name: is_active
+        description: "Whether the product is active."
+      - name: created_date
+        description: "Product creation date."
+
+  - name: dim_stores
+    description: "Store dimension."
+    columns:
+      - name: store_id
+        description: "Store natural key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: store_name
+        description: "Store name."
+      - name: city
+        description: "City."
+      - name: region
+        description: "Region."
+      - name: opened_date
+        description: "Opening date."
+
+  - name: dim_date
+    description: "Conformed calendar spanning the order history plus a small buffer."
+    columns:
+      - name: date_key
+        description: "Integer date key in yyyyMMdd form. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: date_day
+        description: "Calendar date. Unique."
+        tests:
+          - unique
+          - not_null
+      - name: year
+        description: "Calendar year."
+      - name: quarter
+        description: "Calendar quarter (1-4)."
+      - name: month
+        description: "Month number (1-12)."
+      - name: month_name
+        description: "Month name (e.g. January)."
+      - name: week_of_year
+        description: "ISO-style week number."
+      - name: day_of_week
+        description: "Day of week (Databricks convention: 1 = Sunday)."
+      - name: day_name
+        description: "Day name (e.g. Monday)."
+      - name: is_weekend
+        description: "True for Saturday and Sunday."
+
+  - name: fct_sales
+    description: >
+      Order-line fact. customer_sk is resolved as-of the order date against the
+      SCD2 dimension, falling back to the customer's earliest observed version
+      and finally to 'UNKNOWN' (never to a later state).
+    columns:
+      - name: order_item_id
+        description: "Order-line grain. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: order_id
+        description: "Parent order key."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_orders')
+                field: order_id
+      - name: customer_sk
+        description: "As-of SCD2 surrogate key; 'UNKNOWN' when the customer cannot be resolved."
+      - name: customer_id
+        description: "Degenerate customer natural key."
+      - name: product_id
+        description: "Product key."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: product_id
+              config:
+                severity: warn
+      - name: store_id
+        description: "Store key; NULL for non-store orders."
+      - name: date_key
+        description: "Order date key into dim_date."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: order_date
+        description: "Degenerate order date."
+      - name: order_status
+        description: "Order status at extract time."
+      - name: channel
+        description: "Sales channel."
+      - name: quantity
+        description: "Units ordered."
+      - name: unit_price
+        description: "Unit price."
+      - name: line_total
+        description: "Line total as supplied by the source."
+      - name: discount_pct
+        description: "Order-level discount percentage."
+      - name: net_amount
+        description: "line_total * (1 - discount_pct / 100)."
+
+  - name: fct_payments
+    description: >
+      Payment-attempt fact. Retries and split payments remain separate rows.
+    columns:
+      - name: payment_id
+        description: "Payment attempt key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: order_id
+        description: "Parent order key."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_orders')
+                field: order_id
+              config:
+                severity: warn
+      - name: customer_id
+        description: "Customer key from the order; NULL when the order is orphaned."
+      - name: store_id
+        description: "Store key from the order."
+      - name: date_key
+        description: "Payment date key into dim_date."
+      - name: payment_date
+        description: "Degenerate payment date."
+      - name: payment_method
+        description: "Canonical payment method."
+      - name: payment_status
+        description: "Canonical payment status."
+      - name: amount
+        description: "Payment amount."
+      - name: transaction_ref
+        description: "Provider transaction reference."
+      - name: is_successful
+        description: "True when payment_status = 'SUCCESS'."
+
+  - name: fct_returns
+    description: "Return-line fact enriched with the originating order line."
+    columns:
+      - name: return_id
+        description: "Return business key. Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: order_item_id
+        description: "Returned order-line key."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_order_items')
+                field: order_item_id
+              config:
+                severity: warn
+      - name: order_id
+        description: "Parent order key from the order line."
+      - name: product_id
+        description: "Product key from the order line."
+      - name: customer_id
+        description: "Customer key from the order."
+      - name: store_id
+        description: "Store key from the order."
+      - name: date_key
+        description: "Return date key into dim_date."
+      - name: return_date
+        description: "Degenerate return date."
+      - name: reason
+        description: "Canonical return reason."
+      - name: refund_amount
+        description: "Refunded amount."
+      - name: line_total
+        description: "Original line total."
+      - name: is_refund_above_line_total
+        description: "Data-quality flag: refund exceeds the original line total."
