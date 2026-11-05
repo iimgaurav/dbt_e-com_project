@@ -20,16 +20,19 @@ defaults and `env_var()` references, never a token.
 
 ## 2. ⚠️ Outstanding remediation — plaintext PAT on disk
 
-A credential audit found a **personal access token stored in plaintext** in two
-local files outside version control:
+A credential audit found a **personal access token stored in plaintext** in
+local files. One of them was inside the repository working tree:
 
 | File | Field | Status |
 |---|---|---|
-| `C:\temp\DBT_project\.vscode\settings.json` | `dbt.environmentVariables.DATABRICKS_TOKEN` | **Needs removal** |
-| `C:\temp\DBT_project\.env` | `DATABRICKS_TOKEN` | **Needs removal / rotate** |
+| `C:\temp\DBT_project\sales_analytics\.vscode\settings.json` | `dbt.environmentVariables.DATABRICKS_TOKEN` | **Removed before the first commit**; `.vscode/` is now gitignored |
+| `C:\temp\DBT_project\.vscode\settings.json` | `dbt.environmentVariables.DATABRICKS_TOKEN` | **Needs removal** (outside the repo) |
+| `C:\temp\DBT_project\.env` | `DATABRICKS_TOKEN` | **Needs removal / rotate** (outside the repo) |
 
-These are not part of the dbt project and are not committed, but they are on
-disk in plaintext and the token has been exposed in this working session.
+The in-repo copy never entered git history: the token was stripped and
+`.vscode/` added to `.gitignore` before `git init`/`git add`. The two files
+outside the repository are not committed, but they are on disk in plaintext and
+the token has been exposed in this working session.
 
 ### Required actions (in order)
 
