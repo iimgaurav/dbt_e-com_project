@@ -7,6 +7,7 @@ pipeline.
 
 | Time | What | Where |
 |---|---|---|
+| 02:30 IST | Local scheduler `dbt build` (when the dashboard is running) | `scheduler/` dashboard |
 | 02:30 IST | Scheduled `dbt build` | Databricks job `sales_analytics_dbt_prod` |
 | On failure | Email to the address in `resources/dbt_job.yml` | Databricks job notifications |
 | On demand | Manual run / backfill | CLI or job UI |
@@ -49,6 +50,35 @@ dbt build --profiles-dir .
 .\scripts\build.ps1 -FullRefresh                      # rebuild all tables
 .\scripts\build.ps1 -Target prod                      # production catalog
 ```
+
+### Local scheduler app
+
+The Flask + APScheduler dashboard runs the daily dbt build from this PC.
+
+```powershell
+.\scripts\run_scheduler.ps1                # http://127.0.0.1:5055
+.\scripts\run_scheduler.ps1 -Port 5060
+.\scripts\run_scheduler.ps1 -Install       # install/update dependencies only
+.\scripts\run_scheduler.ps1 -NoBrowser
+```
+
+- Defaults: `dev`, 02:30 local time, whole project.
+- Prod is locked by default. The API rejects `target=prod` and a stale config
+  pointing at prod is coerced back to `dev`. To unlock for one process, start
+  the app with `SCHEDULER_ALLOW_PROD=1`; the UI then asks for confirmation.
+- **Pause** before maintenance; **Resume** recomputes the next run.
+- **Run now** uses the saved settings. **Dev smoke test** runs
+  `--target dev --select dim_date`.
+- A second run is refused while one is active (HTTP 409, "already in
+  progress"); APScheduler also enforces `max_instances=1`.
+- If the app is closed at 02:30 the run is skipped, not backfilled. Start the
+  app and use **Run now**; the incremental design makes the retry safe.
+- If the app crashes mid-run, the next startup marks that run **interrupted**.
+- Runtime files: `scheduler/runtime/config.json`, `scheduler.db`,
+  `scheduler.log`, and `runs/*.log`.
+
+The preflight panel verifies `dbt`, the token, `profiles.yml`, and the target
+catalog. A missing `dbt_prod` catalog is reported before any prod run.
 
 ### Databricks job
 
@@ -192,12 +222,20 @@ The content hash intentionally excludes `_ingest_ts`, `_loaded_at`,
 | `TABLE_OR_VIEW_NOT_FOUND observability.pipeline_step_log` | `on-run-start` hooks did not run, or the catalog is missing | Run a full `dbt build`; confirm `CREATE SCHEMA` privilege on the catalog |
 | `idempotency_check` is all NULL | Only one run has been observed | Run `dbt build` a second time, then re-query |
 | `ConcurrentAppendException` on the audit table | Parallel model threads appended at the same instant | Retry the run; Delta appends are safe to replay |
+| Scheduler dashboard does not open | Port 5055 already in use | `.\scripts\run_scheduler.ps1 -Port 5060` |
+| `Catalog 'dbt_prod' does not exist` | Prod catalog not created | Create it in the Databricks UI, then click **Recheck** |
+| Scheduler never fires | App not running, or paused | Start `run_scheduler.ps1`; the dashboard must say **Armed** |
+| `No module named flask` | Scheduler venv not bootstrapped | `.\scripts\run_scheduler.ps1 -Install` |
+| Run stuck as **running** after a crash | Process killed mid-run | Restart the app; stale runs are marked interrupted |
 
 ### Where the logs are
 
 | Log | Location |
 |---|---|
 | dbt run log | `logs/dbt.log` |
+| Scheduler run logs | `scheduler/runtime/runs/*.log` |
+| Scheduler run history | `scheduler/runtime/scheduler.db` (SQLite) |
+| Scheduler app log | `scheduler/runtime/scheduler.log` |
 | Rendered SQL per node | `target/run/` |
 | Compiled SQL | `target/compiled/` |
 | Run results (JSON) | `target/run_results.json` |
@@ -268,8 +306,15 @@ incremental design makes the retry safe.
 Follow [SECURITY.md](SECURITY.md#3-token-rotation) immediately: rotate, update
 the secret, redeploy.
 
+### F. The scheduler app was closed at 02:30
+
+Start it with `.\scripts\run_scheduler.ps1` and click **Run now**. The build is
+idempotent and the incremental models re-read the late-arriving window, so a
+same-day retry is safe.
+
 ## 7. On-call checklist
 
+- [ ] The local scheduler (if used) says **Armed** and its last run succeeded
 - [ ] Job status is **Succeeded** (not just "completed with warnings")
 - [ ] Warning count is exactly 5 and matches the documented set
 - [ ] No new `reject_reason` values in `quarantine_records`
@@ -288,6 +333,7 @@ the secret, redeploy.
 | New model | `dbt build --select <model>+`; add tests + dictionary entry |
 | New DQ rule | rebuild `quarantine_records`, document the rule |
 | Config / target change | `dbt debug` on both dev and prod |
+| Scheduler schedule/target | Save in the dashboard; confirm the next run time |
 | Bundle change | `databricks bundle validate -t dev` **and** `-t prod` |
 | Macro change | full `dbt build` (macros affect many models) |
 | Dependency bump | CI run + manual comparison of row counts |

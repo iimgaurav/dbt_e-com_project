@@ -14,6 +14,7 @@ Type-2 customer dimension, and publishes a star schema for BI.
 | Dev catalog | `dbt` (schemas `bronze`, `silver`, `gold`, `snapshots`) |
 | Prod catalog | `dbt_prod` (must be created before first prod deploy) |
 | Orchestration | Databricks Asset Bundle (`databricks.yml`) |
+| Local scheduler | Flask + APScheduler dashboard (`scheduler/`) |
 | CI/CD | GitHub Actions (`.github/workflows/dbt_ci.yml`) |
 
 ## Current build status
@@ -76,7 +77,15 @@ sales_analytics/
 ├── analyses/check_table.sql      # ad-hoc analysis (not materialized)
 ├── scripts/
 │   ├── build.ps1                 # local build helper
-│   └── deploy.ps1                # bundle validate + deploy helper
+│   ├── deploy.ps1                # bundle validate + deploy helper
+│   └── run_scheduler.ps1         # start the local scheduler dashboard
+├── scheduler/                    # Flask + APScheduler local dashboard
+│   ├── app.py                    # routes, schedule, run lifecycle
+│   ├── runner.py                 # dbt subprocess, token, preflight
+│   ├── store.py                  # SQLite run history
+│   ├── config.py                 # persisted settings
+│   ├── templates/ static/        # dashboard UI
+│   └── runtime/                  # local state (git-ignored)
 ├── .github/workflows/dbt_ci.yml  # CI/CD
 └── docs/                         # this documentation set
 ```
@@ -123,6 +132,8 @@ Or use the helper:
 | Run tests only | `dbt test --profiles-dir .` |
 | Compile + docs index | `dbt compile --write-index --profiles-dir .` |
 | Serve docs | `dbt docs serve --no-open --port 8580` |
+| Start local scheduler | `.\scripts\run_scheduler.ps1` |
+| Install scheduler deps | `.\scripts\run_scheduler.ps1 -Install` |
 | Follow structured logs | `dbt build --profiles-dir . 2>&1 \| Select-String '\[sales_analytics\]'` |
 | Check idempotency | `dbt run-operation check_idempotency --profiles-dir .` |
 | Validate bundle | `databricks bundle validate -t dev --profile DEFAULT` |
@@ -143,6 +154,53 @@ Environment isolation is by **catalog**, so dev and prod never share tables:
 
 Select a target with `DBT_TARGET=prod` or `--target prod`. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for first-time setup and promotion.
+
+## Local scheduler app
+
+A small Flask + APScheduler dashboard in `scheduler/` runs the dbt build from
+this PC every day at **02:30** local time (configurable). It is a local
+alternative to the Databricks job; both execute the same dbt project.
+
+```powershell
+.\scripts\run_scheduler.ps1
+```
+
+The launcher creates `scheduler/.venv`, installs the dependencies once, starts
+the app on <http://127.0.0.1:5055>, and opens the dashboard. Keep the process
+running — the schedule only fires while the app is up.
+
+| In the dashboard | What it does |
+|---|---|
+| **Run now** | Queues one build with the saved target/selector |
+| **Dev smoke test** | Runs `--target dev --select dim_date` (never touches prod) |
+| **Pause / Resume** | Stops or restarts the daily trigger |
+| **Schedule form** | Time, target, optional `--select`, `--full-refresh` |
+| **Preflight** | Checks `dbt`, token, `profiles.yml`, and the target catalog |
+| **Recent runs** | Status, duration, summary, and the full run log |
+
+Defaults: target `dev`, 02:30 local time, whole project. Prod is **locked** in
+code: any request for `target=prod` is rejected unless the process was started
+with `SCHEDULER_ALLOW_PROD=1`. Even then the dashboard asks for confirmation
+before a schedule or manual run is accepted. Settings are stored in
+`scheduler/runtime/config.json`; run history and per-run logs live beside it in
+`scheduler/runtime/` (git-ignored, and outside dbt's `logs/` so `dbt clean` does
+not remove them).
+
+Credentials come from `DATABRICKS_TOKEN` when set, otherwise from the `DEFAULT`
+profile in `~/.databrickscfg`. The token is passed to the child process and is
+never written to `config.json` or the run logs. The dashboard binds to
+`127.0.0.1` only and has no authentication — do not expose it with
+`--host 0.0.0.0`.
+
+> The `prod` target needs the `dbt_prod` catalog. Until it exists, preflight
+> reports **Catalog 'dbt_prod' does not exist** and production runs fail fast.
+> Use the dev smoke test in the meantime.
+
+To start the dashboard automatically at logon, create a Task Scheduler task
+whose action is `powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+C:\temp\DBT_project\sales_analytics\scripts\run_scheduler.ps1 -NoBrowser` with
+trigger **At log on**. Task Scheduler only launches the app; the daily timing
+still comes from APScheduler.
 
 ## Data domains
 
@@ -288,6 +346,8 @@ they protect.
 
 - The practice dataset is intentionally dirty; 5 tests warn by design.
 - `dbt_prod` catalog does not exist yet — create it before the first prod run.
+- The local scheduler must stay running; a run missed while it is closed is not
+  backfilled automatically.
 - The scheduled job is deployed **paused**; unpause after a successful manual run.
 - `lineage.html` / `generate_lineage_html.py` are local tooling, not part of the
   dbt project.

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>sales_analytics scheduler</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <span class="live-dot" id="live-dot" title="Dashboard connection"></span>
+        <div>
+          <h1>sales_analytics <span>scheduler</span></h1>
+          <p class="sub">Daily dbt build · local control panel</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="btn-run" class="btn primary" type="button">Run now</button>
+        <button id="btn-smoke" class="btn ghost" type="button"
+                title="Quick single-model run against the dev catalog">Dev smoke test</button>
+        <button id="btn-toggle" class="btn ghost" type="button">Pause</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner hidden" role="status"></div>
+
+    <section class="cards" aria-label="Status summary">
+      <article class="card">
+        <span class="label">Scheduler</span>
+        <strong id="sched-state">—</strong>
+        <span class="muted" id="sched-detail">—</span>
+      </article>
+      <article class="card">
+        <span class="label">Next run</span>
+        <strong id="next-run">—</strong>
+        <span class="muted" id="next-run-rel">—</span>
+      </article>
+      <article class="card">
+        <span class="label">Last run</span>
+        <strong id="last-status">—</strong>
+        <span class="muted" id="last-detail">—</span>
+      </article>
+      <article class="card">
+        <span class="label">Target</span>
+        <strong id="target">—</strong>
+        <span class="muted" id="catalog">—</span>
+      </article>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Schedule</h2>
+        <form id="config-form">
+          <div class="row">
+            <label>Daily at
+              <input type="time" id="schedule_time" required>
+            </label>
+            <label>Target
+              <select id="target-select">
+                <option value="dev">dev · dbt (safe default)</option>
+                <option value="prod">prod · dbt_prod (confirm required)</option>
+              </select>
+            </label>
+          </div>
+          <p id="prod-lock-note" class="hint hidden">
+            Prod is locked. Set <code>SCHEDULER_ALLOW_PROD=1</code> and restart the
+            scheduler to unlock it.
+          </p>
+          <label>Model selector <span class="hint">optional — e.g. <code>tag:gold</code> or <code>slv_orders+</code></span>
+            <input type="text" id="select" maxlength="200" placeholder="(whole project)">
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="full_refresh">
+            Full refresh — rebuild incremental models from scratch
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn primary">Save schedule</button>
+            <span id="save-msg" class="muted"></span>
+          </div>
+        </form>
+        <p class="note">
+          Runs <code>dbt build --target &lt;target&gt;</code> from this PC. The app must stay
+          running for the schedule to fire. The token is read from
+          <code>DATABRICKS_TOKEN</code> or <code>~/.databrickscfg</code> and is never stored
+          by the scheduler.
+        </p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Preflight</h2>
+          <button id="btn-preflight" class="btn tiny ghost" type="button">Recheck</button>
+        </div>
+        <ul id="preflight" class="checks">
+          <li class="check-item pending"><span class="check-icon">…</span><div><span class="check-name">Checking environment</span></div></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Recent runs</h2>
+        <span class="muted" id="runs-count"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Started</th>
+              <th>Trigger</th>
+              <th>Target</th>
+              <th>Status</th>
+              <th>Duration</th>
+              <th>Summary</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="runs-body">
+            <tr><td colspan="7" class="empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="log-panel" class="panel hidden">
+      <div class="panel-head">
+        <h2>Run log <span id="log-run" class="muted"></span></h2>
+        <div class="log-actions">
+          <span id="log-live" class="pill running hidden">live</span>
+          <button id="btn-log-refresh" class="btn tiny ghost" type="button">Refresh</button>
+          <button id="btn-log-close" class="btn tiny ghost" type="button">Close</button>
+        </div>
+      </div>
+      <pre id="log" class="log">Select a run to view its log.</pre>
+    </section>
+
+    <footer class="footer">
+      <span>Bound to 127.0.0.1 · local only</span>
+      <span id="foot-time">—</span>
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

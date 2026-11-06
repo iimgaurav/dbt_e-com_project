@@ -12,4 +12,6 @@ lineage.html
 generate_lineage_html.py
 *.pyc
 __pycache__/
+scheduler/.venv/
+scheduler/runtime/
 .DS_Store
