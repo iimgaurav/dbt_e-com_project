@@ -1,0 +1,71 @@
+name: Setup dbt Fusion
+description: >-
+  Install a pinned dbt Fusion CLI and preflight the Databricks credentials
+  before any dbt command runs. Replaces the inline curl-install step so the
+  CI and CD workflows cannot drift apart.
+
+inputs:
+  dbt-version:
+    description: >-
+      dbt Fusion version to install. Pinned on purpose - bump it in one place
+      and mention it in PR description (see docs/CI_CD.md#9-version-pinning).
+    required: false
+    default: "2.0.11"
+  databricks-host:
+    description: "DATABRICKS_HOST (passed from the caller's secrets context)."
+    required: false
+    default: ""
+  databricks-http-path:
+    description: "DATABRICKS_HTTP_PATH (passed from the caller's secrets context)."
+    required: false
+    default: ""
+  databricks-token:
+    description: "DATABRICKS_TOKEN (passed from the caller's secrets context)."
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Fails fast with an actionable message instead of dbt's
+    # "Serde YAML Error: missing field token" (dbt1011).
+    - name: Preflight Databricks credentials
+      shell: bash
+      env:
+        DATABRICKS_HOST: ${{ inputs.databricks-host }}
+        DATABRICKS_HTTP_PATH: ${{ inputs.databricks-http-path }}
+        DATABRICKS_TOKEN: ${{ inputs.databricks-token }}
+      run: |
+        set -euo pipefail
+        missing=0
+        for v in DATABRICKS_HOST DATABRICKS_HTTP_PATH DATABRICKS_TOKEN; do
+          if [ -z "${!v:-}" ]; then
+            echo "::error title=Missing credential::$v is empty. Add it under Settings -> Secrets and variables -> Actions (repository or 'production' environment). See docs/CI_CD.md#5-credentials."
+            missing=1
+          fi
+        done
+        if [ "$missing" -ne 0 ]; then
+          exit 1
+        fi
+        echo "Credential preflight OK for $DATABRICKS_HOST"
+
+    - name: Install dbt Fusion ${{ inputs.dbt-version }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Installing pinned dbt Fusion ${{ inputs.dbt-version }}"
+        curl -fsSL https://public.cdn.getdbt.com/fs/install/install.sh | sh -s -- --version "${{ inputs.dbt-version }}"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Verify dbt CLI version
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Absolute path: $GITHUB_PATH is only re-read by the next step, so
+        # this step must not rely on PATH yet.
+        "$HOME/.local/bin/dbt" --version | tee /tmp/dbt-version.txt
+        if ! grep -F "${{ inputs.dbt-version }}" /tmp/dbt-version.txt >/dev/null; then
+          echo "::error title=Version mismatch::Expected dbt Fusion ${{ inputs.dbt-version }}."
+          exit 1
+        fi
+        echo "dbt Fusion ${{ inputs.dbt-version }} ready"

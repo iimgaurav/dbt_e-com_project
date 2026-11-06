@@ -118,24 +118,31 @@ against a different catalog. There is no separate prod branch requirement.
 
 ## 5. CI/CD (GitHub Actions)
 
-`.github/workflows/dbt_ci.yml`:
+Two workflows, plus one shared composite action
+(`.github/actions/setup-dbt`: credential preflight → pinned dbt Fusion
+install → version assertion):
 
-| Trigger | Target | Effect |
-|---|---|---|
-| `pull_request` → `main` | `dev` | Validate the change against `dbt` |
-| `push` → `main` | `prod` | Build against `dbt_prod` |
-| `workflow_dispatch` | per env | Manual run |
+| Workflow | Trigger | Target | Gate |
+|---|---|---|---|
+| `dbt CI` (`.github/workflows/dbt_ci.yml`) | `pull_request` → `main`, manual | `dev` (`dbt`) | required check `dev build (PR)` |
+| `dbt Deploy` (`.github/workflows/dbt_deploy.yml`) | `push` → `main`, manual | `prod` (`dbt_prod`) | GitHub environment `production` |
 
-Pipeline steps:
+Both run the same sequence:
 
-1. Checkout
-2. Install dbt Fusion (official install script)
-3. `dbt --version`
-4. `dbt deps --profiles-dir .`
-5. `dbt debug --profiles-dir .`
-6. `dbt build --profiles-dir . --target <env>`
-7. Upload `manifest.json`, `run_results.json`, `catalog.json`, `logs/`
-   (retained 14 days, uploaded even on failure)
+1. Credential preflight (names any missing secret before dbt runs)
+2. Install dbt Fusion `2.0.11` (pinned, version-asserted)
+3. `dbt deps --profiles-dir .`
+4. CI only: `dbt parse` (fast static validation)
+5. `dbt debug --profiles-dir . --target <env>`
+6. `dbt build --profiles-dir . --target <env>` (seed → snapshot → run → test)
+7. Quality gate: fails on errors/fails or more than 5 warnings; writes a
+   result table to the job summary
+8. Upload `manifest.json`, `run_results.json`, `catalog.json`, `logs/`
+   (14 days, uploaded even on failure)
+
+Prod deploys are serialised (`concurrency: dbt-deploy-prod`,
+`cancel-in-progress: false`) and never cancelled by a newer push. A manual
+`workflow_dispatch` on `dbt Deploy` accepts a `full_refresh` input.
 
 Required repository secrets:
 
@@ -145,12 +152,17 @@ Required repository secrets:
 | `DATABRICKS_HTTP_PATH` | `/sql/1.0/warehouses/faced73bbff7e9f2` |
 | `DATABRICKS_TOKEN` | Service-principal PAT (recommended over a personal token) |
 
-Recommended hardening (not yet implemented):
+Full reference - environments and reviewers, branch ruleset, quality-gate
+baselines, artifact handling, troubleshooting: **[CI_CD.md](CI_CD.md)**.
 
-- Pin the Fusion installer to a specific version instead of `latest`.
-- Use a GitHub Environment (`production`) with required reviewers for `push`.
-- Use a service principal, not a personal PAT.
-- Add `dbt build --select state:modified+` on PRs for faster feedback.
+Hardening status:
+
+| Hardening step | Status |
+|---|---|
+| Pin the Fusion installer to a specific version | **Done** - `2.0.11`, pinned in `.github/actions/setup-dbt` |
+| GitHub Environment (`production`) with required reviewers | Environment exists; **required reviewers still to be added** |
+| Use a service principal, not a personal PAT | Not yet - [CI_CD.md §14](CI_CD.md#14-roadmap) |
+| `dbt build --select state:modified+` on PRs (slim CI) | Not yet - [CI_CD.md §14](CI_CD.md#14-roadmap) |
 
 ## 6. Databricks Asset Bundle
 

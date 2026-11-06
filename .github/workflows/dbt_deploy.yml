@@ -1,0 +1,122 @@
+name: dbt Deploy
+
+# Merge to main == deploy to prod. The job runs inside the GitHub environment
+# `production`, so if required reviewers are configured it waits for one click
+# before touching dbt_prod. See docs/CI_CD.md.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_refresh:
+        description: "BREAKING - rebuild incremental models from scratch in prod"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Prod deploys are serialised and never cancelled mid-flight by a newer push.
+concurrency:
+  group: dbt-deploy-prod
+  cancel-in-progress: false
+
+env:
+  DBT_TARGET: prod
+  # Quality gate: fail if the run produces MORE warnings than this baseline.
+  # Baseline is documented in docs/CI_CD.md#7-quality-gate.
+  EXPECTED_WARNINGS: "5"
+
+jobs:
+  deploy:
+    name: prod deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: production
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup dbt Fusion (pinned)
+        uses: ./.github/actions/setup-dbt
+        with:
+          databricks-host: ${{ secrets.DATABRICKS_HOST }}
+          databricks-http-path: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
+
+      - name: Full-refresh notice
+        if: ${{ inputs.full_refresh }}
+        run: |
+          echo "::warning title=Full refresh in prod::Incremental models will be rebuilt from scratch from ${GITHUB_SHA}. Snapshot history is append-only and is not reset by --full-refresh."
+
+      - name: dbt deps
+        run: dbt deps --profiles-dir .
+
+      - name: dbt debug
+        run: dbt debug --profiles-dir . --target "$DBT_TARGET"
+
+      - name: dbt build
+        env:
+          FULL_REFRESH: ${{ inputs.full_refresh }}
+        run: |
+          set -euo pipefail
+          if [ "$FULL_REFRESH" = "true" ]; then
+            dbt build --profiles-dir . --target "$DBT_TARGET" --full-refresh
+          else
+            dbt build --profiles-dir . --target "$DBT_TARGET"
+          fi
+
+      - name: Quality gate and summary
+        if: always()
+        run: |
+          set -euo pipefail
+          run_json=target/run_results.json
+
+          if [ -f "$run_json" ]; then
+            {
+              echo "### dbt deploy results (target ${DBT_TARGET})"
+              echo ""
+              echo "| status | count |"
+              echo "|---|---|"
+              jq -r '[.results[] | .status] | group_by(.)[] | "| \(.[0]) | \(length) |"' "$run_json"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No run_results.json produced."
+            exit 0
+          fi
+
+          warn=$(jq '[.results[] | select(.status == "warn")] | length' "$run_json")
+          bad=$(jq '[.results[] | select(.status == "error" or .status == "fail")] | length' "$run_json")
+          echo "quality gate: warnings=$warn (baseline $EXPECTED_WARNINGS) failing=$bad"
+
+          if [ "$bad" -gt 0 ]; then
+            echo "::error title=Failing results::$bad dbt results have status error/fail. See the uploaded artifacts."
+            exit 1
+          fi
+          if [ "$warn" -gt "$EXPECTED_WARNINGS" ]; then
+            echo "::error title=Warning ceiling exceeded::$warn warnings exceeds the baseline of $EXPECTED_WARNINGS. Fix the new warning or consciously raise EXPECTED_WARNINGS in .github/workflows/dbt_deploy.yml and dbt_ci.yml (docs/CI_CD.md#7-quality-gate)."
+            exit 1
+          fi
+          if [ "$warn" -lt "$EXPECTED_WARNINGS" ]; then
+            echo "::warning title=Warning count improved::$warn warnings is below the baseline of $EXPECTED_WARNINGS. Lower EXPECTED_WARNINGS to lock in the new baseline."
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbt-artifacts-prod-${{ github.run_id }}
+          path: |
+            target/manifest.json
+            target/run_results.json
+            target/catalog.json
+            logs/
+          if-no-files-found: ignore
+          retention-days: 14

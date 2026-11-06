@@ -15,7 +15,7 @@ Type-2 customer dimension, and publishes a star schema for BI.
 | Prod catalog | `dbt_prod` (must be created before first prod deploy) |
 | Orchestration | Databricks Asset Bundle (`databricks.yml`) |
 | Local scheduler | Flask + APScheduler dashboard (`scheduler/`) |
-| CI/CD | GitHub Actions (`.github/workflows/dbt_ci.yml`) |
+| CI/CD | GitHub Actions: `dbt CI` (PR → dev) + `dbt Deploy` (main → gated prod) |
 
 ## Current build status
 
@@ -86,7 +86,11 @@ sales_analytics/
 │   ├── config.py                 # persisted settings
 │   ├── templates/ static/        # dashboard UI
 │   └── runtime/                  # local state (git-ignored)
-├── .github/workflows/dbt_ci.yml  # CI/CD
+├── .github/
+│   ├── actions/setup-dbt/        # composite: pinned dbt + credential preflight
+│   ├── workflows/dbt_ci.yml      # PR -> dev build, quality gate, artifacts
+│   ├── workflows/dbt_deploy.yml  # merge -> gated prod deploy
+│   └── pull_request_template.md
 └── docs/                         # this documentation set
 ```
 
@@ -219,6 +223,20 @@ still comes from APScheduler.
 Row counts are a snapshot of the `dev` catalog and will drift as the source
 files change.
 
+## CI/CD
+
+| | |
+|---|---|
+| On every PR | `dbt CI` → `dbt build --target dev`, quality gate, artifacts (14 days) |
+| On merge to `main` | `dbt Deploy` → `dbt build --target prod` inside the `production` environment |
+| Credentials | Actions secrets `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN` |
+| Toolchain | dbt Fusion `2.0.11`, pinned in `.github/actions/setup-dbt` |
+| Quality gate | fails the run if warnings exceed the documented baseline of 5 |
+
+Prod deploys wait for approval once required reviewers are configured on the
+`production` environment. Full reference - workflows, secrets, approvals,
+ruleset, troubleshooting: [docs/CI_CD.md](docs/CI_CD.md).
+
 ## Documentation
 
 | Document | What it covers |
@@ -227,7 +245,8 @@ files change.
 | [docs/DATA_DICTIONARY.md](docs/DATA_DICTIONARY.md) | Every table and column, with types and business meaning |
 | [docs/DATA_QUALITY.md](docs/DATA_QUALITY.md) | Test strategy, the 17 quarantine rules, known issues |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Daily operations, backfills, troubleshooting, recovery |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Setup, CI/CD, bundle deploy, promotion, rollback |
+| [docs/CI_CD.md](docs/CI_CD.md) | Pipeline reference: workflows, secrets, approvals, quality gate, troubleshooting |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Setup, bundle deploy, promotion, rollback |
 | [docs/SECURITY.md](docs/SECURITY.md) | Secrets, token rotation, least privilege, PII handling |
 
 ## Logging and audit

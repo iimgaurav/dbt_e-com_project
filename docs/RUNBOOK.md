@@ -227,6 +227,11 @@ The content hash intentionally excludes `_ingest_ts`, `_loaded_at`,
 | Scheduler never fires | App not running, or paused | Start `run_scheduler.ps1`; the dashboard must say **Armed** |
 | `No module named flask` | Scheduler venv not bootstrapped | `.\scripts\run_scheduler.ps1 -Install` |
 | Run stuck as **running** after a crash | Process killed mid-run | Restart the app; stale runs are marked interrupted |
+| Actions: `Serde YAML Error: missing field token` | A `DATABRICKS_*` Actions secret is missing or empty | Add it in Settings → Secrets and variables → Actions ([CI_CD.md §5](CI_CD.md#5-credentials)) |
+| Actions: steps show `0s` and `dbt build` skipped | An earlier step failed, so the rest was skipped (`0s` also = sub-second no-ops like `dbt deps`) | Open the first red step ([CI_CD.md §11](CI_CD.md#11-troubleshooting)) |
+| Actions: deploy sits at **Waiting** | `production` environment requires a reviewer | Expected behaviour - approve on the run page |
+| Actions: `Warning ceiling exceeded` | A new test warns, or data regressed | Fix it, or raise `EXPECTED_WARNINGS` in both workflows ([CI_CD.md §7](CI_CD.md#7-quality-gate)) |
+| Prod deployed without a click | `production` has no required reviewers | Add them: Settings → Environments → production ([CI_CD.md §6](CI_CD.md#6-environments-and-approvals)) |
 
 ### Where the logs are
 
@@ -243,6 +248,7 @@ The content hash intentionally excludes `_ingest_ts`, `_loaded_at`,
 | Step timeline view | `dbt.observability.pipeline_step_timeline` |
 | Idempotency view | `dbt.observability.idempotency_check` |
 | Databricks job output | Job run UI → task `dbt_build` |
+| GitHub Actions run | **Actions** tab → run → summary table + artifacts (14 days) |
 
 ### Structured logs
 

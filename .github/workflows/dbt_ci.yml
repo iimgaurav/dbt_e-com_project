@@ -1,125 +1,102 @@
 name: dbt CI
 
+# Every pull request builds the whole project into the dev catalog.
+# Nothing in this workflow can ever touch dbt_prod.
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
 
-# One run per ref: a new push to a PR supersedes the previous build.
+permissions:
+  contents: read
+
+# A new push to the same PR supersedes the in-flight run.
 concurrency:
-  group: dbt-${{ github.ref }}
+  group: dbt-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  DBT_TARGET: dev
+  # Quality gate: fail if the run produces MORE warnings than this baseline.
+  # Baseline is documented in docs/CI_CD.md#7-quality-gate.
+  EXPECTED_WARNINGS: "5"
+
 jobs:
-  # ---------------------------------------------------------------- PR -> dev
-  # Pull requests build into the dev catalog only. Never prod.
-  build-dev:
-    if: github.event_name != 'push'
+  validate-and-build:
+    name: dev build (PR)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      DBT_TARGET: dev
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Install dbt Fusion
-        # Official install script; pin a version in production.
-        run: |
-          curl -fsSL https://public.cdn.getdbt.com/fs/install/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: dbt version
-        run: dbt --version
-
-      - name: Verify credentials are configured
-        # Turns the opaque "Serde YAML Error: missing field token" into a clear
-        # pointer at the missing repository secret.
-        run: |
-          missing=0
-          for v in DATABRICKS_HOST DATABRICKS_HTTP_PATH DATABRICKS_TOKEN; do
-            if [ -z "${!v}" ]; then
-              echo "::error::Secret '$v' is not set. Add it under Settings -> Secrets and variables -> Actions."
-              missing=1
-            fi
-          done
-          exit $missing
+      - name: Setup dbt Fusion (pinned)
+        uses: ./.github/actions/setup-dbt
+        with:
+          databricks-host: ${{ secrets.DATABRICKS_HOST }}
+          databricks-http-path: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
 
       - name: dbt deps
         run: dbt deps --profiles-dir .
 
+      # Cheap static validation first: YAML, refs, macros. Fails in seconds
+      # instead of after a connection attempt.
+      - name: dbt parse
+        run: dbt parse --profiles-dir . --target "$DBT_TARGET"
+
       - name: dbt debug
         run: dbt debug --profiles-dir . --target "$DBT_TARGET"
 
+      # `dbt build` = seed + snapshot + run + test, in DAG order.
       - name: dbt build
         run: dbt build --profiles-dir . --target "$DBT_TARGET"
 
+      - name: Quality gate and summary
+        if: always()
+        run: |
+          set -euo pipefail
+          run_json=target/run_results.json
+
+          if [ -f "$run_json" ]; then
+            {
+              echo "### dbt CI results (target ${DBT_TARGET})"
+              echo ""
+              echo "| status | count |"
+              echo "|---|---|"
+              jq -r '[.results[] | .status] | group_by(.)[] | "| \(.[0]) | \(length) |"' "$run_json"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No run_results.json produced."
+            exit 0
+          fi
+
+          warn=$(jq '[.results[] | select(.status == "warn")] | length' "$run_json")
+          bad=$(jq '[.results[] | select(.status == "error" or .status == "fail")] | length' "$run_json")
+          echo "quality gate: warnings=$warn (baseline $EXPECTED_WARNINGS) failing=$bad"
+
+          if [ "$bad" -gt 0 ]; then
+            echo "::error title=Failing results::$bad dbt results have status error/fail. See the uploaded artifacts."
+            exit 1
+          fi
+          if [ "$warn" -gt "$EXPECTED_WARNINGS" ]; then
+            echo "::error title=Warning ceiling exceeded::$warn warnings exceeds the baseline of $EXPECTED_WARNINGS. Fix the new warning or consciously raise EXPECTED_WARNINGS in .github/workflows/dbt_ci.yml and dbt_deploy.yml (docs/CI_CD.md#7-quality-gate)."
+            exit 1
+          fi
+          if [ "$warn" -lt "$EXPECTED_WARNINGS" ]; then
+            echo "::warning title=Warning count improved::$warn warnings is below the baseline of $EXPECTED_WARNINGS. Lower EXPECTED_WARNINGS to lock in the new baseline."
+          fi
+
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dbt-artifacts-dev-${{ github.run_id }}
-          path: |
-            target/manifest.json
-            target/run_results.json
-            target/catalog.json
-            logs/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  # ----------------------------------------------------- main -> prod (gated)
-  # Requires the GitHub environment 'production' (Settings -> Environments)
-  # with required reviewers, so a merge waits for one click before prod runs.
-  deploy-prod:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    environment: production
-    env:
-      DBT_TARGET: prod
-      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-      DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
-      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dbt Fusion
-        run: |
-          curl -fsSL https://public.cdn.getdbt.com/fs/install/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: dbt version
-        run: dbt --version
-
-      - name: Verify credentials are configured
-        run: |
-          missing=0
-          for v in DATABRICKS_HOST DATABRICKS_HTTP_PATH DATABRICKS_TOKEN; do
-            if [ -z "${!v}" ]; then
-              echo "::error::Secret '$v' is not set. Add it under Settings -> Secrets and variables -> Actions."
-              missing=1
-            fi
-          done
-          exit $missing
-
-      - name: dbt deps
-        run: dbt deps --profiles-dir .
-
-      - name: dbt debug
-        run: dbt debug --profiles-dir . --target "$DBT_TARGET"
-
-      - name: dbt build
-        run: dbt build --profiles-dir . --target "$DBT_TARGET"
-
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dbt-artifacts-prod-${{ github.run_id }}
           path: |
             target/manifest.json
             target/run_results.json
