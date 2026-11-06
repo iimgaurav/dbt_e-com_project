@@ -7,18 +7,23 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# One run per ref: a new push to a PR supersedes the previous build.
 concurrency:
   group: dbt-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  DBT_TARGET: ${{ github.event_name == 'push' && 'prod' || 'dev' }}
-
 jobs:
-  build:
+  # ---------------------------------------------------------------- PR -> dev
+  # Pull requests build into the dev catalog only. Never prod.
+  build-dev:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
+    env:
+      DBT_TARGET: dev
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,28 +36,90 @@ jobs:
       - name: dbt version
         run: dbt --version
 
+      - name: Verify credentials are configured
+        # Turns the opaque "Serde YAML Error: missing field token" into a clear
+        # pointer at the missing repository secret.
+        run: |
+          missing=0
+          for v in DATABRICKS_HOST DATABRICKS_HTTP_PATH DATABRICKS_TOKEN; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Secret '$v' is not set. Add it under Settings -> Secrets and variables -> Actions."
+              missing=1
+            fi
+          done
+          exit $missing
+
       - name: dbt deps
         run: dbt deps --profiles-dir .
 
       - name: dbt debug
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-        run: dbt debug --profiles-dir .
+        run: dbt debug --profiles-dir . --target "$DBT_TARGET"
 
       - name: dbt build
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: dbt build --profiles-dir . --target "$DBT_TARGET"
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dbt-artifacts-${{ github.run_id }}
+          name: dbt-artifacts-dev-${{ github.run_id }}
+          path: |
+            target/manifest.json
+            target/run_results.json
+            target/catalog.json
+            logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ----------------------------------------------------- main -> prod (gated)
+  # Requires the GitHub environment 'production' (Settings -> Environments)
+  # with required reviewers, so a merge waits for one click before prod runs.
+  deploy-prod:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    env:
+      DBT_TARGET: prod
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dbt Fusion
+        run: |
+          curl -fsSL https://public.cdn.getdbt.com/fs/install/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: dbt version
+        run: dbt --version
+
+      - name: Verify credentials are configured
+        run: |
+          missing=0
+          for v in DATABRICKS_HOST DATABRICKS_HTTP_PATH DATABRICKS_TOKEN; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Secret '$v' is not set. Add it under Settings -> Secrets and variables -> Actions."
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: dbt deps
+        run: dbt deps --profiles-dir .
+
+      - name: dbt debug
+        run: dbt debug --profiles-dir . --target "$DBT_TARGET"
+
+      - name: dbt build
+        run: dbt build --profiles-dir . --target "$DBT_TARGET"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-artifacts-prod-${{ github.run_id }}
           path: |
             target/manifest.json
             target/run_results.json
