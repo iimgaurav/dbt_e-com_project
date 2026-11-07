@@ -287,6 +287,14 @@ where there is no parent, it falls back to the model's own row count).
 `_ingest_ts`, `_loaded_at`, `detected_at` and `dbt_*` columns are excluded so a
 re-run of an idempotent model hashes identically.
 
+The two observability views record **NULL metrics** on their own `end` rows:
+computing their metrics would read `pipeline_step_log` inside the same
+transaction that appends to it, which a concurrent hook append can invalidate
+(`DELTA_CONCURRENT_APPEND.ROW_LEVEL_CHANGES`, hit by `pipeline_step_timeline`
+in both dev and prod on 2026-11-06). See `model_reads_audit` in
+`macros/observability.sql`. They are excluded from the idempotency claim above
+by design (`idempotency_check` filters on `schema_name`).
+
 ```sql
 select model_name, rows_read, rows_written, content_hash
 from dbt.observability.pipeline_step_log

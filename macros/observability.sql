@@ -128,8 +128,46 @@ from {{ this }}
 {%- endmacro %}
 
 
-{#- INSERT for a model start or end event. End events include metrics. -#}
+{#- True when computing this model's `end` metrics would SCAN the audit table.
+
+    Such a statement reads and appends to pipeline_step_log inside ONE Delta
+    transaction. While other threads' hooks append concurrently, Delta rejects
+    the commit with DELTA_CONCURRENT_APPEND.ROW_LEVEL_CHANGES and dbt marks
+    the otherwise-successful model as failed. Observed 2026-11-06 on
+    pipeline_step_timeline in BOTH catalogs (dev run under classic dbt, prod
+    run under dbt Fusion) - the metrics SELECT reads the very table the
+    INSERT writes, so any concurrent hook append can land between the read
+    snapshot and the commit.
+
+    Models that live in - or directly source - the audit table therefore
+    record NULL metrics on their `end` rows: they are observability views,
+    not pipeline models, and idempotency_check already excludes their schema
+    (see models/observability/idempotency_check.sql), so the documented
+    "24/24 pipeline models idempotent" claim is unaffected.
+#}
+{% macro model_reads_audit() -%}
+    {%- set audit_schema = (var('audit_schema', 'observability') | lower) -%}
+    {%- set audit_table = (var('audit_table', 'pipeline_step_log') | lower) -%}
+    {%- if this is defined and this.schema is defined and (this.schema | lower) == audit_schema -%}
+        {{ return(true) }}
+    {%- endif -%}
+    {%- for node_id in model.depends_on.nodes -%}
+        {%- set node = graph.nodes.get(node_id) -%}
+        {%- if node is not none and node.schema is defined -%}
+            {%- set ident = node.identifier if node.resource_type == 'source' else node.alias -%}
+            {%- if (node.schema | lower) == audit_schema and (ident | lower) == audit_table -%}
+                {{ return(true) }}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{ return(false) }}
+{%- endmacro %}
+
+
+{#- INSERT for a model start or end event. End events include metrics unless
+    the metric query would read the audit table itself (model_reads_audit) -#}
 {% macro insert_model_event(step, status, detail=none) -%}
+{%- set with_metrics = step == 'end' and status == 'success' and not model_reads_audit() -%}
 insert into {{ audit_relation() }}
 select
     '{{ invocation_id }}' as run_id,
@@ -141,7 +179,7 @@ select
     '{{ model.config.materialized | string }}' as materialization,
     '{{ step }}' as step,
     '{{ status }}' as status,
-    {%- if step == 'end' and status == 'success' %}
+    {%- if with_metrics %}
     metrics.rows_read as rows_read,
     metrics.rows_written as rows_written,
     metrics.content_hash as content_hash,
@@ -151,7 +189,7 @@ select
     cast(null as string) as content_hash,
     {%- endif %}
     {{ sql_str(detail) }} as detail
-{%- if step == 'end' and status == 'success' %}
+{%- if with_metrics %}
 from ({{ model_metrics_sql() }}) as metrics
 {%- endif %}
 {%- endmacro %}

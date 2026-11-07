@@ -74,10 +74,19 @@ models:
       - name: phase
         description: "Logical order: 1 = start, 2 = inline step, 3 = end."
       - name: rows_read
-        description: "Model-level logical input rows (attached to every step)."
+        description: >
+          Model-level logical input rows (attached to every step). NULL for the
+          observability models themselves: their metrics would read the audit
+          table inside the same transaction that writes it, which Delta can
+          reject under concurrent hook appends (see macros/observability.sql,
+          model_reads_audit).
       - name: rows_written
-        description: "Model-level output rows (attached to every step)."
+        description: >
+          Model-level output rows (attached to every step). NULL for the
+          observability models themselves (see model_reads_audit).
       - name: content_hash
-        description: "Model-level stable-column fingerprint."
+        description: >
+          Model-level stable-column fingerprint. NULL for the observability
+          models themselves (see model_reads_audit).
       - name: detail
         description: "Free-form step context."

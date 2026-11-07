@@ -261,6 +261,7 @@ the workflow, not from a laptop.
 | Run sits at **Waiting** | `production` environment requires a reviewer - this is the gate working | Someone with approval rights clicks **Approve** |
 | `Catalog 'dbt_prod' does not exist` | Prod catalog never created | [DEPLOYMENT.md §3.1](DEPLOYMENT.md#31-create-catalogs) |
 | `Warning ceiling exceeded` | A new test warns, or a data issue regressed | Fix it, or raise `EXPECTED_WARNINGS` in both workflows in the same PR ([§7](#7-quality-gate)) |
+| `DELTA_CONCURRENT_APPEND.ROW_LEVEL_CHANGES` on `pipeline_step_log` | An audit `end`-hook read *and* wrote the log table in one Delta transaction while another thread's hook appended (the model itself succeeded) | Fixed by `model_reads_audit` in `macros/observability.sql` - audit-schema models record NULL metrics. On an older commit: re-run the job, then backport the macro |
 | PR fails at preflight, repo works for you | Fork PR - GitHub withholds secrets | Push the branch to the origin repo instead of a fork |
 | CI green, prod fails | Targets differ only by catalog, so this means an environment/permission problem | Check `dbt debug --target prod`, catalog grants, warehouse availability |
 | Deploy cancelled halfway | Never by this workflow (`cancel-in-progress: false`); only a manual cancel or a runner outage | Re-run the job; dbt is idempotent, the build resumes cleanly |
