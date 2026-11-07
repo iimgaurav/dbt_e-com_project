@@ -1,0 +1,35 @@
+# Dependabot: keep GitHub Actions and the scheduler's Python deps current.
+# Security updates are enabled repo-side (Dependabot security updates), so
+# advisories open PRs from this configuration too.
+version: 2
+updates:
+  # Composite action + workflows pin actions by major tag (checkout@v7, ...).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # Flask + APScheduler dashboard.
+  - package-ecosystem: "pip"
+    directory: "/scheduler"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"

@@ -1,0 +1,67 @@
+name: Bug report
+description: A dbt build, CI/CD workflow, or the scheduler failed
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Redact all tokens and credentials** before pasting logs.
+        Check the [existing issues](https://github.com/iimgaurav/dbt_e-com_project/issues) first.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where did it fail?
+      options:
+        - GitHub Actions (dbt CI)
+        - GitHub Actions (dbt Deploy)
+        - Local dbt build
+        - Databricks / warehouse
+        - Scheduler dashboard
+        - Documentation / repository settings
+    validations:
+      required: true
+
+  - type: input
+    id: run_url
+    attributes:
+      label: Run or commit reference
+      description: Link to the failed workflow run, or the commit SHA
+      placeholder: "https://github.com/iimgaurav/dbt_e-com_project/actions/runs/..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: The error message and the step it failed on.
+      placeholder: "dbt build failed at step 'dbt build' with: ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: dbt / environment versions
+      placeholder: "dbt-fusion 2.0.11, target dev, Windows"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate
+          required: true
+        - label: I have redacted all tokens, passwords and hostnames from the logs
+          required: true

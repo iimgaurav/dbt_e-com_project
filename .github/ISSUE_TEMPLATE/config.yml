@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Project documentation
+    url: https://github.com/iimgaurav/dbt_e-com_project/tree/main/docs
+    about: Architecture, CI/CD, security and data-quality docs — check these before opening an issue
+  - name: Pipeline health
+    url: https://github.com/iimgaurav/dbt_e-com_project/actions
+    about: Check whether dbt CI / dbt Deploy are already failing before reporting

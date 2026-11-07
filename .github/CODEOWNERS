@@ -1,0 +1,9 @@
+# Default owner for everything in the repository.
+# GitHub requests a review from this owner on every pull request.
+*       @iimgaurav
+
+# Security- and CI-sensitive paths stay explicitly owned, so when a second
+# collaborator joins they are added here first for these directories.
+.github/        @iimgaurav
+macros/         @iimgaurav
+scheduler/      @iimgaurav

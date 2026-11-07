@@ -1,5 +1,10 @@
 # sales_analytics — production dbt project on Databricks
 
+[![dbt CI](https://github.com/iimgaurav/dbt_e-com_project/actions/workflows/dbt_ci.yml/badge.svg?branch=main)](https://github.com/iimgaurav/dbt_e-com_project/actions/workflows/dbt_ci.yml)
+[![dbt Deploy](https://github.com/iimgaurav/dbt_e-com_project/actions/workflows/dbt_deploy.yml/badge.svg?branch=main)](https://github.com/iimgaurav/dbt_e-com_project/actions/workflows/dbt_deploy.yml)
+[![CodeQL](https://github.com/iimgaurav/dbt_e-com_project/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/iimgaurav/dbt_e-com_project/actions/workflows/codeql.yml)
+[![Security policy](https://img.shields.io/badge/security-policy-D93F0B)](https://github.com/iimgaurav/dbt_e-com_project/blob/main/SECURITY.md)
+
 A medallion (bronze → silver → gold) analytics project for a retail sales
 dataset, built with **dbt Fusion** on **Databricks Unity Catalog**. It ingests
 raw CSVs from a UC volume, cleans and quarantines dirty records, maintains a
