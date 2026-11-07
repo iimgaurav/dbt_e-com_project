@@ -1,6 +1,6 @@
 # Local scheduler dashboard dependencies.
 # Install into scheduler/.venv with scripts/run_scheduler.ps1
 Flask>=3.1,<4
-APScheduler>=3.11,<4
+APScheduler>=3.11.3,<4
 waitress>=3.0,<4
 tzdata>=2024.1
