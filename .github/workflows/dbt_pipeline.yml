@@ -98,9 +98,6 @@ jobs:
       - name: Build DEV environment
         run: dbt build --profiles-dir . --target dev
 
-      - name: Run DEV tests
-        run: dbt test --profiles-dir . --target dev
-
       - name: Quality gate
         if: always()
         run: |
@@ -155,8 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: dev-build
-    if: |
-      github.event_name == 'workflow_dispatch' && (inputs.environment == 'uat' || inputs.environment == 'prod')
+    if: github.event_name == 'workflow_dispatch' && (inputs.environment == 'uat' || inputs.environment == 'prod')
     environment: uat
     env:
       DBT_TARGET: uat
@@ -201,8 +197,7 @@ jobs:
             dbt build --profiles-dir . --target uat
           fi
 
-      - name: Run UAT tests
-        run: dbt test --profiles-dir . --target uat
+      # Tests are already included in dbt build
 
       - name: Quality gate
         if: always()
@@ -258,9 +253,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [dev-build, uat-build]
-    if: |
-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && !inputs.skip_uat) ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && !inputs.skip_uat) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     environment: production
     env:
       DBT_TARGET: prod
@@ -305,8 +298,7 @@ jobs:
             dbt build --profiles-dir . --target prod
           fi
 
-      - name: Run PROD tests
-        run: dbt test --profiles-dir . --target prod
+      # Tests are already included in dbt build
 
       - name: Quality gate
         if: always()
@@ -362,10 +354,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [dev-build]
-    if: |
-      github.event_name == 'workflow_dispatch' &&
-      inputs.environment == 'prod' &&
-      inputs.skip_uat == true
+    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && inputs.skip_uat == true
     environment: production
     env:
       DBT_TARGET: prod
@@ -391,8 +380,7 @@ jobs:
       - name: Build PROD (Emergency)
         run: dbt build --profiles-dir . --target prod
 
-      - name: Run PROD tests
-        run: dbt test --profiles-dir . --target prod
+      # Tests are already included in dbt build
 
       - name: Quality gate
         if: always()
