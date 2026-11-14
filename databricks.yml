@@ -23,6 +23,13 @@ targets:
     variables:
       catalog: dbt
 
+  uat:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: dbt_uat
+
   prod:
     mode: production
     workspace:
