@@ -69,7 +69,7 @@ jobs:
   # LAYER 1: DEV - Continuous Integration (always runs on PR)
   # =====================================================================
   dev-build:
-    name: "Layer 1: DEV Build & Test"
+    name: "dev build (PR)"
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
