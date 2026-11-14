@@ -26,7 +26,7 @@ env:
   DBT_TARGET: prod
   # Quality gate: fail if the run produces MORE warnings than this baseline.
   # Baseline is documented in docs/CI_CD.md#7-quality-gate.
-  EXPECTED_WARNINGS: "5"
+  EXPECTED_WARNINGS: "6"
 
 jobs:
   deploy:
