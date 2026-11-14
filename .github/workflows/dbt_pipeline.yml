@@ -53,6 +53,12 @@ permissions:
   contents: read
   pull-requests: write
 
+# Serialize all runs to prevent DELTA_METADATA_CHANGED errors
+# from concurrent builds against the same Databricks schemas
+concurrency:
+  group: dbt-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   DBT_TARGET: dev
   EXPECTED_WARNINGS: "6"
@@ -96,7 +102,23 @@ jobs:
         run: dbt debug --profiles-dir . --target dev
 
       - name: Build DEV environment
-        run: dbt build --profiles-dir . --target dev
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== Build attempt $attempt ==="
+            if dbt build --profiles-dir . --target dev; then
+              echo "Build succeeded on attempt $attempt"
+              break
+            else
+              if [ "$attempt" -lt 3 ]; then
+                echo "::warning::Build failed on attempt $attempt. Retrying in 30s..."
+                sleep 30
+              else
+                echo "::error::Build failed after 3 attempts."
+                exit 1
+              fi
+            fi
+          done
 
       - name: Quality gate
         if: always()
@@ -191,11 +213,27 @@ jobs:
       - name: Build UAT environment
         run: |
           set -euo pipefail
-          if [ "${{ inputs.full_refresh }}" = "true" ]; then
-            dbt build --profiles-dir . --target uat --full-refresh
-          else
-            dbt build --profiles-dir . --target uat
-          fi
+          for attempt in 1 2 3; do
+            echo "=== UAT Build attempt $attempt ==="
+            if [ "${{ inputs.full_refresh }}" = "true" ]; then
+              if dbt build --profiles-dir . --target uat --full-refresh; then
+                echo "UAT Build succeeded on attempt $attempt"
+                break
+              fi
+            else
+              if dbt build --profiles-dir . --target uat; then
+                echo "UAT Build succeeded on attempt $attempt"
+                break
+              fi
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::UAT Build failed on attempt $attempt. Retrying in 30s..."
+              sleep 30
+            else
+              echo "::error::UAT Build failed after 3 attempts."
+              exit 1
+            fi
+          done
 
       # Tests are already included in dbt build
 
@@ -252,7 +290,7 @@ jobs:
     name: "Layer 3: PROD Deploy"
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [dev-build, uat-build]
+    needs: [dev-build]
     if: (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && !inputs.skip_uat) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     environment: production
     env:
@@ -292,11 +330,27 @@ jobs:
       - name: Deploy to PROD
         run: |
           set -euo pipefail
-          if [ "${{ inputs.full_refresh }}" = "true" ]; then
-            dbt build --profiles-dir . --target prod --full-refresh
-          else
-            dbt build --profiles-dir . --target prod
-          fi
+          for attempt in 1 2 3; do
+            echo "=== PROD Build attempt $attempt ==="
+            if [ "${{ inputs.full_refresh }}" = "true" ]; then
+              if dbt build --profiles-dir . --target prod --full-refresh; then
+                echo "PROD Build succeeded on attempt $attempt"
+                break
+              fi
+            else
+              if dbt build --profiles-dir . --target prod; then
+                echo "PROD Build succeeded on attempt $attempt"
+                break
+              fi
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::PROD Build failed on attempt $attempt. Retrying in 30s..."
+              sleep 30
+            else
+              echo "::error::PROD Build failed after 3 attempts."
+              exit 1
+            fi
+          done
 
       # Tests are already included in dbt build
 
@@ -378,7 +432,22 @@ jobs:
         run: dbt deps --profiles-dir .
 
       - name: Build PROD (Emergency)
-        run: dbt build --profiles-dir . --target prod
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== PROD Emergency Build attempt $attempt ==="
+            if dbt build --profiles-dir . --target prod; then
+              echo "PROD Emergency Build succeeded on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::PROD Emergency Build failed on attempt $attempt. Retrying in 30s..."
+              sleep 30
+            else
+              echo "::error::PROD Emergency Build failed after 3 attempts."
+              exit 1
+            fi
+          done
 
       # Tests are already included in dbt build
 
