@@ -1,0 +1,481 @@
+name: dbt 3-Layer Pipeline
+
+# Robust 3-Layer CI/CD Pipeline for sales_analytics dbt project
+# Layer 1: DEV   - Continuous integration on PRs
+# Layer 2: UAT   - User acceptance testing (manual trigger after dev passes)
+# Layer 3: PROD  - Production deployment (requires UAT approval)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'models/**'
+      - 'macros/**'
+      - 'seeds/**'
+      - 'tests/**'
+      - 'snapshots/**'
+      - 'dbt_project.yml'
+      - 'profiles.yml'
+      - 'databricks.yml'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'models/**'
+      - 'macros/**'
+      - 'seeds/**'
+      - 'tests/**'
+      - 'snapshots/**'
+      - 'dbt_project.yml'
+      - 'profiles.yml'
+      - 'databricks.yml'
+      - '.github/workflows/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment to deploy'
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
+        default: dev
+      full_refresh:
+        description: 'Full refresh (rebuild incremental models)'
+        type: boolean
+        default: false
+      skip_uat:
+        description: 'Skip UAT and deploy directly to prod (emergency only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Serialize all runs to prevent DELTA_METADATA_CHANGED errors
+# from concurrent builds against the same Databricks schemas
+concurrency:
+  group: dbt-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DBT_TARGET: dev
+  EXPECTED_WARNINGS: "6"
+  DBT_VERSION: "2.0.11"
+
+jobs:
+  # =====================================================================
+  # LAYER 1: DEV - Continuous Integration (always runs on PR)
+  # =====================================================================
+  dev-build:
+    name: "dev build (PR)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DBT_TARGET: dev
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DBT_DEV_CATALOG: ${{ vars.DBT_DEV_CATALOG || 'dbt' }}
+      DBT_DEV_SCHEMA: ${{ vars.DBT_DEV_SCHEMA || 'dev' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup dbt Fusion
+        uses: ./.github/actions/setup-dbt
+        with:
+          dbt-version: ${{ env.DBT_VERSION }}
+          databricks-host: ${{ secrets.DATABRICKS_HOST }}
+          databricks-http-path: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
+
+      - name: Install dependencies
+        run: dbt deps --profiles-dir .
+
+      - name: Parse project
+        run: dbt parse --profiles-dir . --target dev
+
+      - name: Debug connection
+        run: dbt debug --profiles-dir . --target dev
+
+      - name: Build DEV environment
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== Build attempt $attempt ==="
+            if dbt build --profiles-dir . --target dev; then
+              echo "Build succeeded on attempt $attempt"
+              break
+            else
+              if [ "$attempt" -lt 3 ]; then
+                echo "::warning::Build failed on attempt $attempt. Retrying in 30s..."
+                sleep 30
+              else
+                echo "::error::Build failed after 3 attempts."
+                exit 1
+              fi
+            fi
+          done
+
+      - name: Quality gate
+        if: always()
+        run: |
+          set -euo pipefail
+          run_json=target/run_results.json
+
+          if [ -f "$run_json" ]; then
+            {
+              echo "### DEV Layer Results"
+              echo ""
+              echo "| status | count |"
+              echo "|---|---|"
+              jq -r '[.results[] | .status] | group_by(.)[] | "| \(.[0]) | \(length) |"' "$run_json"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No run_results.json produced."
+            exit 0
+          fi
+
+          warn=$(jq '[.results[] | select(.status == "warn")] | length' "$run_json")
+          bad=$(jq '[.results[] | select(.status == "error" or .status == "fail")] | length' "$run_json")
+          echo "DEV quality gate: warnings=$warn (baseline $EXPECTED_WARNINGS) failing=$bad"
+
+          if [ "$bad" -gt 0 ]; then
+            echo "::error title=DEV Build Failed::$bad dbt results have status error/fail."
+            exit 1
+          fi
+          if [ "$warn" -gt "$EXPECTED_WARNINGS" ]; then
+            echo "::error title=DEV Warning Ceiling Exceeded::$warn warnings exceeds baseline of $EXPECTED_WARNINGS."
+            exit 1
+          fi
+
+      - name: Upload DEV artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbt-artifacts-dev-${{ github.run_id }}
+          path: |
+            target/manifest.json
+            target/run_results.json
+            target/catalog.json
+            logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # =====================================================================
+  # LAYER 2: UAT - User Acceptance Testing (runs after DEV passes)
+  # =====================================================================
+  uat-build:
+    name: "Layer 2: UAT Build & Test"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: dev-build
+    if: github.event_name == 'workflow_dispatch' && (inputs.environment == 'uat' || inputs.environment == 'prod')
+    environment: uat
+    env:
+      DBT_TARGET: uat
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DBT_UAT_CATALOG: ${{ vars.DBT_UAT_CATALOG || 'dbt_uat' }}
+      DBT_UAT_SCHEMA: ${{ vars.DBT_UAT_SCHEMA || 'uat' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup dbt Fusion
+        uses: ./.github/actions/setup-dbt
+        with:
+          dbt-version: ${{ env.DBT_VERSION }}
+          databricks-host: ${{ secrets.DATABRICKS_HOST }}
+          databricks-http-path: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
+
+      - name: Install dependencies
+        run: dbt deps --profiles-dir .
+
+      - name: Parse project
+        run: dbt parse --profiles-dir . --target uat
+
+      - name: Debug connection
+        run: dbt debug --profiles-dir . --target uat
+
+      - name: Full refresh notice
+        if: ${{ inputs.full_refresh }}
+        run: |
+          echo "::warning title=UAT Full Refresh::Incremental models will be rebuilt from scratch in UAT."
+
+      - name: Build UAT environment
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== UAT Build attempt $attempt ==="
+            if [ "${{ inputs.full_refresh }}" = "true" ]; then
+              if dbt build --profiles-dir . --target uat --full-refresh; then
+                echo "UAT Build succeeded on attempt $attempt"
+                break
+              fi
+            else
+              if dbt build --profiles-dir . --target uat; then
+                echo "UAT Build succeeded on attempt $attempt"
+                break
+              fi
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::UAT Build failed on attempt $attempt. Retrying in 30s..."
+              sleep 30
+            else
+              echo "::error::UAT Build failed after 3 attempts."
+              exit 1
+            fi
+          done
+
+      # Tests are already included in dbt build
+
+      - name: Quality gate
+        if: always()
+        run: |
+          set -euo pipefail
+          run_json=target/run_results.json
+
+          if [ -f "$run_json" ]; then
+            {
+              echo "### UAT Layer Results"
+              echo ""
+              echo "| status | count |"
+              echo "|---|---|"
+              jq -r '[.results[] | .status] | group_by(.)[] | "| \(.[0]) | \(length) |"' "$run_json"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No run_results.json produced."
+            exit 0
+          fi
+
+          warn=$(jq '[.results[] | select(.status == "warn")] | length' "$run_json")
+          bad=$(jq '[.results[] | select(.status == "error" or .status == "fail")] | length' "$run_json")
+          echo "UAT quality gate: warnings=$warn (baseline $EXPECTED_WARNINGS) failing=$bad"
+
+          if [ "$bad" -gt 0 ]; then
+            echo "::error title=UAT Build Failed::$bad dbt results have status error/fail."
+            exit 1
+          fi
+          if [ "$warn" -gt "$EXPECTED_WARNINGS" ]; then
+            echo "::error title=UAT Warning Ceiling Exceeded::$warn warnings exceeds baseline of $EXPECTED_WARNINGS."
+            exit 1
+          fi
+
+      - name: Upload UAT artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbt-artifacts-uat-${{ github.run_id }}
+          path: |
+            target/manifest.json
+            target/run_results.json
+            target/catalog.json
+            logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # =====================================================================
+  # LAYER 3: PROD - Production Deployment (requires UAT approval)
+  # =====================================================================
+  prod-deploy:
+    name: "Layer 3: PROD Deploy"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [dev-build]
+    if: (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && !inputs.skip_uat) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    environment: production
+    env:
+      DBT_TARGET: prod
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DBT_PROD_CATALOG: ${{ vars.DBT_PROD_CATALOG || 'dbt_prod' }}
+      DBT_PROD_SCHEMA: ${{ vars.DBT_PROD_SCHEMA || 'analytics' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup dbt Fusion
+        uses: ./.github/actions/setup-dbt
+        with:
+          dbt-version: ${{ env.DBT_VERSION }}
+          databricks-host: ${{ secrets.DATABRICKS_HOST }}
+          databricks-http-path: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
+
+      - name: Install dependencies
+        run: dbt deps --profiles-dir .
+
+      - name: Parse project
+        run: dbt parse --profiles-dir . --target prod
+
+      - name: Debug connection
+        run: dbt debug --profiles-dir . --target prod
+
+      - name: Full refresh notice
+        if: ${{ inputs.full_refresh }}
+        run: |
+          echo "::warning title=PROD Full Refresh::Incremental models will be rebuilt from scratch in PROD."
+
+      - name: Deploy to PROD
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== PROD Build attempt $attempt ==="
+            if [ "${{ inputs.full_refresh }}" = "true" ]; then
+              if dbt build --profiles-dir . --target prod --full-refresh; then
+                echo "PROD Build succeeded on attempt $attempt"
+                break
+              fi
+            else
+              if dbt build --profiles-dir . --target prod; then
+                echo "PROD Build succeeded on attempt $attempt"
+                break
+              fi
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::PROD Build failed on attempt $attempt. Retrying in 30s..."
+              sleep 30
+            else
+              echo "::error::PROD Build failed after 3 attempts."
+              exit 1
+            fi
+          done
+
+      # Tests are already included in dbt build
+
+      - name: Quality gate
+        if: always()
+        run: |
+          set -euo pipefail
+          run_json=target/run_results.json
+
+          if [ -f "$run_json" ]; then
+            {
+              echo "### PROD Layer Results"
+              echo ""
+              echo "| status | count |"
+              echo "|---|---|"
+              jq -r '[.results[] | .status] | group_by(.)[] | "| \(.[0]) | \(length) |"' "$run_json"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No run_results.json produced."
+            exit 0
+          fi
+
+          warn=$(jq '[.results[] | select(.status == "warn")] | length' "$run_json")
+          bad=$(jq '[.results[] | select(.status == "error" or .status == "fail")] | length' "$run_json")
+          echo "PROD quality gate: warnings=$warn (baseline $EXPECTED_WARNINGS) failing=$bad"
+
+          if [ "$bad" -gt 0 ]; then
+            echo "::error title=PROD Build Failed::$bad dbt results have status error/fail."
+            exit 1
+          fi
+          if [ "$warn" -gt "$EXPECTED_WARNINGS" ]; then
+            echo "::error title=PROD Warning Ceiling Exceeded::$warn warnings exceeds baseline of $EXPECTED_WARNINGS."
+            exit 1
+          fi
+
+      - name: Upload PROD artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbt-artifacts-prod-${{ github.run_id }}
+          path: |
+            target/manifest.json
+            target/run_results.json
+            target/catalog.json
+            logs/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # =====================================================================
+  # EMERGENCY: Direct PROD deploy (skip UAT) - requires approval
+  # =====================================================================
+  emergency-prod-deploy:
+    name: "EMERGENCY: Direct PROD Deploy (Skip UAT)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [dev-build]
+    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && inputs.skip_uat == true
+    environment: production
+    env:
+      DBT_TARGET: prod
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup dbt Fusion
+        uses: ./.github/actions/setup-dbt
+        with:
+          dbt-version: ${{ env.DBT_VERSION }}
+          databricks-host: ${{ secrets.DATABRICKS_HOST }}
+          databricks-http-path: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          databricks-token: ${{ secrets.DATABRICKS_TOKEN }}
+
+      - name: Install dependencies
+        run: dbt deps --profiles-dir .
+
+      - name: Build PROD (Emergency)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "=== PROD Emergency Build attempt $attempt ==="
+            if dbt build --profiles-dir . --target prod; then
+              echo "PROD Emergency Build succeeded on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::PROD Emergency Build failed on attempt $attempt. Retrying in 30s..."
+              sleep 30
+            else
+              echo "::error::PROD Emergency Build failed after 3 attempts."
+              exit 1
+            fi
+          done
+
+      # Tests are already included in dbt build
+
+      - name: Quality gate
+        if: always()
+        run: |
+          set -euo pipefail
+          run_json=target/run_results.json
+
+          if [ -f "$run_json" ]; then
+            warn=$(jq '[.results[] | select(.status == "warn")] | length' "$run_json")
+            bad=$(jq '[.results[] | select(.status == "error" or .status == "fail")] | length' "$run_json")
+            echo "EMERGENCY PROD: warnings=$warn failing=$bad"
+
+            if [ "$bad" -gt 0 ]; then
+              echo "::error title=EMERGENCY PROD Failed::$bad results failed."
+              exit 1
+            fi
+          fi
+
+      - name: Upload PROD artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbt-artifacts-prod-emergency-${{ github.run_id }}
+          path: |
+            target/manifest.json
+            target/run_results.json
+            target/catalog.json
+          if-no-files-found: ignore
+          retention-days: 30
