@@ -2,7 +2,7 @@
     materialized='incremental',
     incremental_strategy='merge',
     unique_key='product_id',
-    on_schema_change='sync_all_columns',
+    on_schema_change='fail',
     tags=['gold', 'marts', 'scd1']
 ) }}
 
