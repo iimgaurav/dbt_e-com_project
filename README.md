@@ -376,11 +376,27 @@ they protect.
 
 ## Known caveats
 
-- The practice dataset is intentionally dirty; 5 tests warn by design.
-- `dbt_prod` catalog does not exist yet — create it before the first prod run.
-- The local scheduler must stay running; a run missed while it is closed is not
-  backfilled automatically.
-- The scheduled job is deployed **paused**; unpause after a successful manual run.
+- The practice dataset is intentionally dirty; **6 tests warn by design**
+  (measured baseline from the last full run; CI enforces the same ceiling via
+  `EXPECTED_WARNINGS: "6"`).
+- `dbt_prod` / `dbt_uat` catalogs do not exist yet — run
+  [resources/prod_catalog_setup.sql](resources/prod_catalog_setup.sql) once
+  per workspace before the first UAT/prod run, then follow
+  [docs/PROD_CUTOVER.md](docs/PROD_CUTOVER.md)
+  (or `scripts/prod_cutover.ps1`) for the first build.
+- The local `scheduler/` is a dev-only convenience (see
+  [scheduler/README.md](scheduler/README.md)); it does not backfill missed
+  runs. Production scheduling is the Databricks job in
+  [resources/dbt_job.yml](resources/dbt_job.yml).
+- The scheduled job is deployed **paused**; unpause after a successful manual
+  run with `.\scripts\prod_cutover.ps1 -Unpause`.
+- The first incremental run after the append-only bronze change lands against
+  old-shaped bronze tables succeeds (the anti-join is null-safe), but rows
+  ingested before the change keep a NULL `row_hash` — cosmetic only; silver
+  dedupe is unaffected.
+- The gold contracts are newly enforced; a first build can fail if a column's
+  materialized type drifts from `models/gold/schema.yml` — fix the model, not
+  the contract, unless the contract type is genuinely wrong.
 - `lineage.html` / `generate_lineage_html.py` are local tooling, not part of the
   dbt project.
 - See [docs/SECURITY.md](docs/SECURITY.md) for an outstanding credential

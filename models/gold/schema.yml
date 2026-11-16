@@ -2,6 +2,10 @@ version: 2
 
 # Gold layer: star schema for BI. Every model and column is documented so that
 # `+persist_docs` can publish the descriptions to Unity Catalog.
+#
+# All models declare enforced contracts: the built relation must match the
+# column names and data types below exactly, so downstream consumers get a
+# guaranteed interface (production parity: typed gold tables).
 
 models:
   - name: dim_customers_scd2
@@ -10,204 +14,355 @@ models:
       insert-only history table. valid_from = source updated_at; valid_to = the
       next version's valid_from (9999-12-31 for the open row). Late-arriving
       versions need no close-out UPDATE.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: customer_sk
+        data_type: string
         description: "Surrogate key: md5(customer_id || valid_from)."
         tests:
           - unique
           - not_null
       - name: customer_id
+        data_type: string
         description: "Natural customer key."
         tests:
           - not_null
       - name: first_name
+        data_type: string
         description: "Customer first name at this version (PII)."
       - name: last_name
+        data_type: string
         description: "Customer last name at this version (PII)."
       - name: full_name
+        data_type: string
         description: "first_name concatenated with last_name (PII)."
       - name: email
+        data_type: string
         description: "Email at this version (PII)."
       - name: phone
+        data_type: string
         description: "Phone at this version (PII)."
       - name: city
+        data_type: string
         description: "City at this version."
       - name: state
+        data_type: string
         description: "State at this version."
       - name: country
+        data_type: string
         description: "Country at this version."
       - name: signup_date
+        data_type: date
         description: "Signup date."
       - name: customer_segment
+        data_type: string
         description: "Segment at this version."
       - name: version_number
+        data_type: int
         description: "1-based version number ordered by valid_from."
       - name: valid_from
+        data_type: timestamp
         description: "Version start timestamp (inclusive)."
         tests:
           - not_null
       - name: valid_to
+        data_type: timestamp
         description: "Version end timestamp (exclusive); 9999-12-31 for the current row."
       - name: is_current
+        data_type: boolean
         description: "True for the open version."
         tests:
           - not_null
       - name: row_hash
+        data_type: string
         description: "md5 of the version attributes, for change detection."
       - name: _loaded_at
+        data_type: timestamp
         description: "Timestamp this version was first observed."
 
   - name: dim_customers_history
     description: >
       Insert-only SCD2 version history, incrementally merged on
       (customer_id, valid_from). Append-only: windows are derived downstream.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: customer_id
+        data_type: string
         description: "Customer natural key. Part of the version key."
         tests:
           - not_null
       - name: first_name
+        data_type: string
         description: "Customer first name (PII)."
       - name: last_name
+        data_type: string
         description: "Customer last name (PII)."
       - name: email
+        data_type: string
         description: "Email (PII)."
       - name: phone
+        data_type: string
         description: "Phone (PII)."
       - name: city
+        data_type: string
         description: "City."
       - name: state
+        data_type: string
         description: "State."
       - name: country
+        data_type: string
         description: "Country."
       - name: signup_date
+        data_type: date
         description: "Signup date."
       - name: customer_segment
+        data_type: string
         description: "Customer segment."
       - name: valid_from
+        data_type: timestamp
         description: "Version start, from the source updated_at. Part of the version key."
         tests:
           - not_null
       - name: row_hash
+        data_type: string
         description: "md5 of the version attributes."
       - name: _loaded_at
+        data_type: timestamp
         description: "Timestamp this version was first observed."
 
   - name: dim_customers
     description: "Type-1 current-state customer dimension for operational reporting."
+    config:
+      contract:
+        enforced: true
     columns:
       - name: customer_id
+        data_type: string
         description: "Customer natural key. Primary key."
         tests:
           - unique
           - not_null
       - name: first_name
+        data_type: string
         description: "First name (PII)."
       - name: last_name
+        data_type: string
         description: "Last name (PII)."
       - name: full_name
+        data_type: string
         description: "First name concatenated with last name (PII)."
       - name: email
+        data_type: string
         description: "Email (PII)."
       - name: phone
+        data_type: string
         description: "Phone (PII)."
       - name: city
+        data_type: string
         description: "City."
       - name: state
+        data_type: string
         description: "State."
       - name: country
+        data_type: string
         description: "Country."
       - name: signup_date
+        data_type: date
         description: "Signup date."
       - name: customer_segment
+        data_type: string
         description: "Customer segment."
 
   - name: dim_products
-    description: "Product dimension with unit margin."
+    description: >
+      SCD Type-1 product dimension with unit margin. MERGE-upserted on
+      product_id: changed attributes overwrite the previous values.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: product_id
+        data_type: string
         description: "Product natural key. Primary key."
         tests:
           - unique
           - not_null
       - name: product_name
+        data_type: string
         description: "Product name."
       - name: brand
+        data_type: string
         description: "Brand."
       - name: category
+        data_type: string
         description: "Product category."
       - name: unit_price
+        data_type: decimal(10, 2)
         description: "Selling price."
       - name: cost_price
+        data_type: decimal(10, 2)
         description: "Cost price."
       - name: margin_amount
+        data_type: decimal(18, 2)
         description: "unit_price - cost_price."
       - name: currency
+        data_type: string
         description: "Currency code."
       - name: is_active
+        data_type: boolean
         description: "Whether the product is active."
       - name: created_date
+        data_type: date
         description: "Product creation date."
 
+  - name: dim_region
+    description: >
+      Region dimension. One row per region with the number of stores; conformed
+      so facts and dim_stores join on a surrogate key (production parity).
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: region_sk
+        data_type: string
+        description: "Surrogate key: md5(region). Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: region
+        data_type: string
+        description: "Canonical region name."
+        tests:
+          - unique
+          - not_null
+      - name: store_count
+        data_type: bigint
+        description: "Number of stores in the region."
+
   - name: dim_stores
-    description: "Store dimension."
+    description: "Store dimension, conformed to dim_region via region_sk."
+    config:
+      contract:
+        enforced: true
     columns:
       - name: store_id
+        data_type: string
         description: "Store natural key. Primary key."
         tests:
           - unique
           - not_null
       - name: store_name
+        data_type: string
         description: "Store name."
       - name: city
+        data_type: string
         description: "City."
       - name: region
-        description: "Region."
+        data_type: string
+        description: "Canonical region name."
       - name: opened_date
+        data_type: date
         description: "Opening date."
+      - name: region_sk
+        data_type: string
+        description: "Foreign key into dim_region."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_region')
+                field: region_sk
 
   - name: dim_date
-    description: "Conformed calendar spanning the order history plus a small buffer."
+    description: >
+      Conformed calendar spanning the order history plus a small buffer, with
+      the production fiscal calendar (FY runs 1 July - 30 June), Indian
+      national holidays, and abbreviated name attributes.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: date_key
+        data_type: int
         description: "Integer date key in yyyyMMdd form. Primary key."
         tests:
           - unique
           - not_null
       - name: date_day
+        data_type: date
         description: "Calendar date. Unique."
         tests:
           - unique
           - not_null
       - name: year
+        data_type: int
         description: "Calendar year."
       - name: quarter
+        data_type: int
         description: "Calendar quarter (1-4)."
       - name: month
+        data_type: int
         description: "Month number (1-12)."
       - name: month_name
+        data_type: string
         description: "Month name (e.g. January)."
       - name: week_of_year
+        data_type: int
         description: "ISO-style week number."
       - name: day_of_week
+        data_type: int
         description: "Day of week (Databricks convention: 1 = Sunday)."
       - name: day_name
+        data_type: string
         description: "Day name (e.g. Monday)."
       - name: is_weekend
+        data_type: boolean
         description: "True for Saturday and Sunday."
+      - name: fiscal_year
+        data_type: int
+        description: "Fiscal year; FY runs 1 July - 30 June (July 2025 opens FY2026)."
+      - name: fiscal_quarter
+        data_type: int
+        description: "Fiscal quarter within the fiscal year (1-4)."
+      - name: is_holiday
+        data_type: boolean
+        description: >
+          True for the three fixed-date Indian national holidays
+          (26 Jan, 15 Aug, 2 Oct) plus any dates in the holiday_dates var.
+      - name: day_abbr
+        data_type: string
+        description: "Abbreviated day name (e.g. Mon)."
+      - name: month_abbr
+        data_type: string
+        description: "Abbreviated month name (e.g. Jan)."
+      - name: year_month
+        data_type: string
+        description: "Year and month as yyyy-MM."
+      - name: year_quarter
+        data_type: string
+        description: "Year and quarter as yyyy-Qn (e.g. 2025-Q3)."
 
   - name: fct_sales
     description: >
       Order-line fact. customer_sk is resolved as-of the order date against the
       SCD2 dimension, falling back to the customer's earliest observed version
-      and finally to 'UNKNOWN' (never to a later state).
+      and finally to 'UNKNOWN' (never to a later state). Carries cost, profit
+      and margin metrics mirroring the production fact_sales definition.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: order_item_id
+        data_type: string
         description: "Order-line grain. Primary key."
         tests:
           - unique
           - not_null
       - name: order_id
+        data_type: string
         description: "Parent order key."
         tests:
           - not_null
@@ -216,10 +371,13 @@ models:
                 to: ref('slv_orders')
                 field: order_id
       - name: customer_sk
+        data_type: string
         description: "As-of SCD2 surrogate key; 'UNKNOWN' when the customer cannot be resolved."
       - name: customer_id
+        data_type: string
         description: "Degenerate customer natural key."
       - name: product_id
+        data_type: string
         description: "Product key."
         tests:
           - relationships:
@@ -229,8 +387,18 @@ models:
               config:
                 severity: warn
       - name: store_id
+        data_type: string
         description: "Store key; NULL for non-store orders."
+      - name: region_sk
+        data_type: string
+        description: "Region key via dim_stores; NULL for orphan or non-store orders."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_region')
+                field: region_sk
       - name: date_key
+        data_type: int
         description: "Order date key into dim_date."
         tests:
           - not_null
@@ -239,32 +407,139 @@ models:
                 to: ref('dim_date')
                 field: date_key
       - name: order_date
+        data_type: date
         description: "Degenerate order date."
       - name: order_status
+        data_type: string
         description: "Order status at extract time."
       - name: channel
+        data_type: string
         description: "Sales channel."
       - name: quantity
+        data_type: int
         description: "Units ordered."
       - name: unit_price
+        data_type: decimal(10, 2)
         description: "Unit price."
       - name: line_total
+        data_type: decimal(10, 2)
         description: "Line total as supplied by the source."
       - name: discount_pct
+        data_type: decimal(5, 2)
         description: "Order-level discount percentage."
       - name: net_amount
+        data_type: decimal(18, 2)
         description: "line_total * (1 - discount_pct / 100)."
+      - name: cost_amount
+        data_type: decimal(18, 2)
+        description: "quantity * product.cost_price; NULL when the product is unresolvable."
+      - name: profit_amount
+        data_type: decimal(18, 2)
+        description: "net_amount - cost_amount."
+      - name: profit_margin
+        data_type: decimal(9, 4)
+        description: "profit_amount / net_amount."
+
+  - name: fact_orders
+    description: >
+      Order-grain fact. One row per order, aggregating its lines: item count,
+      quantity, gross/net amounts and the cost / profit / margin metrics from
+      the line-level fact (production parity: fact_orders).
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: order_id
+        data_type: string
+        description: "Order grain. Primary key."
+        tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_orders')
+                field: order_id
+      - name: customer_sk
+        data_type: string
+        description: "As-of SCD2 surrogate key; 'UNKNOWN' when the customer cannot be resolved."
+      - name: customer_id
+        data_type: string
+        description: "Degenerate customer natural key."
+      - name: store_id
+        data_type: string
+        description: "Store key; NULL for non-store orders."
+      - name: region_sk
+        data_type: string
+        description: "Region key via dim_stores."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_region')
+                field: region_sk
+      - name: region
+        data_type: string
+        description: "Degenerate canonical region name."
+      - name: date_key
+        data_type: int
+        description: "Order date key into dim_date."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: order_date
+        data_type: date
+        description: "Degenerate order date."
+      - name: order_status
+        data_type: string
+        description: "Order status at extract time."
+      - name: channel
+        data_type: string
+        description: "Sales channel."
+      - name: discount_pct
+        data_type: decimal(5, 2)
+        description: "Order-level discount percentage."
+      - name: booked_amount
+        data_type: decimal(18, 2)
+        description: "Order total as booked by the source."
+      - name: item_count
+        data_type: bigint
+        description: "Number of order lines."
+      - name: total_quantity
+        data_type: bigint
+        description: "Sum of line quantities."
+      - name: gross_amount
+        data_type: decimal(18, 2)
+        description: "Sum of line totals before discount."
+      - name: net_amount
+        data_type: decimal(18, 2)
+        description: "Sum of discounted line nets."
+      - name: cost_amount
+        data_type: decimal(18, 2)
+        description: "Sum of line costs."
+      - name: profit_amount
+        data_type: decimal(18, 2)
+        description: "net_amount - cost_amount."
+      - name: profit_margin
+        data_type: decimal(9, 4)
+        description: "profit_amount / net_amount."
 
   - name: fct_payments
     description: >
       Payment-attempt fact. Retries and split payments remain separate rows.
+    config:
+      contract:
+        enforced: true
     columns:
       - name: payment_id
+        data_type: string
         description: "Payment attempt key. Primary key."
         tests:
           - unique
           - not_null
       - name: order_id
+        data_type: string
         description: "Parent order key."
         tests:
           - not_null
@@ -275,33 +550,47 @@ models:
               config:
                 severity: warn
       - name: customer_id
+        data_type: string
         description: "Customer key from the order; NULL when the order is orphaned."
       - name: store_id
+        data_type: string
         description: "Store key from the order."
       - name: date_key
+        data_type: int
         description: "Payment date key into dim_date."
       - name: payment_date
+        data_type: date
         description: "Degenerate payment date."
       - name: payment_method
+        data_type: string
         description: "Canonical payment method."
       - name: payment_status
+        data_type: string
         description: "Canonical payment status."
       - name: amount
+        data_type: decimal(18, 2)
         description: "Payment amount."
       - name: transaction_ref
+        data_type: string
         description: "Provider transaction reference."
       - name: is_successful
+        data_type: boolean
         description: "True when payment_status = 'SUCCESS'."
 
   - name: fct_returns
     description: "Return-line fact enriched with the originating order line."
+    config:
+      contract:
+        enforced: true
     columns:
       - name: return_id
+        data_type: string
         description: "Return business key. Primary key."
         tests:
           - unique
           - not_null
       - name: order_item_id
+        data_type: string
         description: "Returned order-line key."
         tests:
           - not_null
@@ -312,22 +601,32 @@ models:
               config:
                 severity: warn
       - name: order_id
+        data_type: string
         description: "Parent order key from the order line."
       - name: product_id
+        data_type: string
         description: "Product key from the order line."
       - name: customer_id
+        data_type: string
         description: "Customer key from the order."
       - name: store_id
+        data_type: string
         description: "Store key from the order."
       - name: date_key
+        data_type: int
         description: "Return date key into dim_date."
       - name: return_date
+        data_type: date
         description: "Degenerate return date."
       - name: reason
+        data_type: string
         description: "Canonical return reason."
       - name: refund_amount
+        data_type: decimal(18, 2)
         description: "Refunded amount."
       - name: line_total
+        data_type: decimal(10, 2)
         description: "Original line total."
       - name: is_refund_above_line_total
+        data_type: boolean
         description: "Data-quality flag: refund exceeds the original line total."

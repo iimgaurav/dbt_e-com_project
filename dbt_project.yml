@@ -1,5 +1,5 @@
 name: 'sales_analytics'
-version: '1.0.0'
+version: '1.1.0'
 config-version: 2
 
 profile: 'sales_analytics'
@@ -25,14 +25,29 @@ vars:
   # Table-based audit log location (see macros/observability.sql)
   audit_schema: observability
   audit_table: pipeline_step_log
+  # Per-table watermarks (production parity: control.watermark_table).
+  # Recorded into observability.watermark_table after every successful run
+  # for each incremental model listed here (model name -> watermark column).
+  watermarks:
+    slv_orders: last_modified_at
+    dim_customers_history: valid_from
+  # Circuit breaker for the data-quality quarantine (rows). Breaching it
+  # fails the build (tests/assert_quarantine_threshold.sql). Tune down once
+  # the known-issue baseline for the production source is established.
+  quarantine_alert_threshold: 2000
+  # Extra dates ('yyyy-MM-dd') treated as holidays by dim_date, on top of
+  # the three fixed-date Indian national holidays baked into the model.
+  holiday_dates: []
 
 # Structured logging + audit table (see macros/logging.sql / observability.sql)
 on-run-start:
   - "{{ create_audit_schema() }}"
   - "{{ create_audit_table() }}"
+  - "{{ create_watermark_table() }}"
   - "{{ log_run_start() }}"
 on-run-end:
   - "{{ log_run_end(results) }}"
+  - "{{ record_watermarks(results) }}"
 
 models:
   sales_analytics:
