@@ -2,6 +2,7 @@
     materialized='incremental',
     incremental_strategy='merge',
     unique_key=['customer_id', 'valid_from'],
+    on_schema_change='append_new_columns',
     tags=['gold', 'scd2']
 ) }}
 

@@ -7,7 +7,7 @@ resources:
       schedule:
         quartz_cron_expression: "0 30 2 * * ?" # 02:30 daily
         timezone_id: Asia/Kolkata
-        pause_status: PAUSED # unpause after the first successful manual run
+        pause_status: PAUSED # unpause after the first successful manual run (scripts/prod_cutover.ps1 -Unpause)
 
       email_notifications:
         on_failure:

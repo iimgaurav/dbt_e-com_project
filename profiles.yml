@@ -2,9 +2,10 @@
 # the environment (CI secret, Databricks secret scope, or local shell).
 #
 #   dev  -> catalog: dbt        (isolated dev catalog)
+#   uat  -> catalog: dbt_uat     (sandboxed UAT catalog)
 #   prod -> catalog: dbt_prod   (create it before the first prod deploy)
 #
-# Select with DBT_TARGET=prod or `dbt build --target prod`.
+# Select with DBT_TARGET=uat or `dbt build --target uat`.
 
 sales_analytics:
   target: "{{ env_var('DBT_TARGET', 'dev') }}"
@@ -14,6 +15,15 @@ sales_analytics:
       type: databricks
       catalog: "{{ env_var('DBT_DEV_CATALOG', 'dbt') }}"
       schema: "{{ env_var('DBT_DEV_SCHEMA', 'dev') }}"
+      host: "{{ env_var('DATABRICKS_HOST', 'https://dbc-f49d67a0-6a22.cloud.databricks.com') }}"
+      http_path: "{{ env_var('DATABRICKS_HTTP_PATH', '/sql/1.0/warehouses/faced73bbff7e9f2') }}"
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
+      threads: 4
+
+    uat:
+      type: databricks
+      catalog: "{{ env_var('DBT_UAT_CATALOG', 'dbt_uat') }}"
+      schema: "{{ env_var('DBT_UAT_SCHEMA', 'uat') }}"
       host: "{{ env_var('DATABRICKS_HOST', 'https://dbc-f49d67a0-6a22.cloud.databricks.com') }}"
       http_path: "{{ env_var('DATABRICKS_HTTP_PATH', '/sql/1.0/warehouses/faced73bbff7e9f2') }}"
       token: "{{ env_var('DATABRICKS_TOKEN') }}"

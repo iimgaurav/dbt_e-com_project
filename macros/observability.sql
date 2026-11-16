@@ -220,6 +220,68 @@ select
 {%- endmacro %}
 
 
+{#- Fully-qualified watermark table name. -#}
+{% macro watermark_relation() -%}
+    {{ target.catalog }}.{{ var('audit_schema', 'observability') }}.watermark_table
+{%- endmacro %}
+
+
+{#- Create the per-model watermark table (idempotent).
+
+    Production parity (control.watermark_table): dbt stores its high-water mark
+    inside the target relation itself, so after every run we persist
+    max(watermark_col) for each incremental model listed in the `watermarks`
+    var. batch_id is the dbt invocation_id, which is also the run_id written
+    to pipeline_step_log - the two tables join on it.
+#}
+{% macro create_watermark_table() -%}
+create table if not exists {{ watermark_relation() }} (
+    model_name      string    comment 'Incremental model the watermark belongs to',
+    watermark_col   string    comment 'Column the watermark is taken from',
+    watermark_value timestamp comment 'max(watermark_col) after the last successful run',
+    batch_id        string    comment 'dbt invocation_id; joins to pipeline_step_log.run_id',
+    rows_written    bigint    comment 'Row count of the model after the run',
+    logged_at       timestamp comment 'When this watermark row was written'
+)
+using delta
+tblproperties ('delta.autoOptimize.optimizeWrite' = 'true')
+{%- endmacro %}
+
+
+{#- Record watermarks for every successful incremental model listed in the
+    `watermarks` var (model name -> watermark column). Runs from on-run-end.
+    Skipped for partial runs (results only contain the selected nodes). -#}
+{% macro record_watermarks(results) -%}
+    {%- set watermarks = var('watermarks', {}) -%}
+    {%- if watermarks | length > 0 -%}
+        {%- for result in results -%}
+            {%- set node = result.node -%}
+            {%- if node is not none
+                  and node.resource_type == 'model'
+                  and node.config.materialized == 'incremental'
+                  and result.status == 'success'
+                  and node.name in watermarks -%}
+                {%- set wm_col = watermarks[node.name] -%}
+                {%- set rel = node.relation_name
+                    if node.relation_name is not none
+                    else (node.database ~ '.' ~ node.schema ~ '.' ~ node.alias) -%}
+                {%- set sql -%}
+insert into {{ watermark_relation() }}
+select
+    {{ sql_str(node.name) }},
+    {{ sql_str(wm_col) }},
+    (select max({{ wm_col }}) from {{ rel }}),
+    '{{ invocation_id }}',
+    (select count(*) from {{ rel }}),
+    current_timestamp()
+                {%- endset -%}
+                {%- do run_query(sql) -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endmacro %}
+
+
 {#- Convenience operation: print the idempotency verdict per model.
 
     Usage:
