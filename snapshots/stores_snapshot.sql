@@ -2,7 +2,7 @@
 
     {{
         config(
-            target_schema="snapshots",
+            target_schema="{{ var('snapshot_schema', 'snapshots') }}",
             unique_key="store_id",
             strategy="check",
             check_cols=["store_name", "city", "region"],

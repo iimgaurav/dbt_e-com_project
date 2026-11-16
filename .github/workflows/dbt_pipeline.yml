@@ -174,7 +174,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     needs: dev-build
-    if: github.event_name == 'workflow_dispatch' && (inputs.environment == 'uat' || inputs.environment == 'prod')
+    if: (github.event_name == 'workflow_dispatch' && (inputs.environment == 'uat' || inputs.environment == 'prod')) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     environment: uat
     env:
       DBT_TARGET: uat
@@ -290,7 +290,7 @@ jobs:
     name: "Layer 3: PROD Deploy"
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [dev-build]
+    needs: [dev-build, uat-build]
     if: (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && !inputs.skip_uat) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     environment: production
     env:

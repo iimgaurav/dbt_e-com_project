@@ -1,0 +1,51 @@
+version: 2
+
+# The bronze landing tables are built by the staging models and are also
+# declared as sources, which gives `dbt source freshness` a per-table data
+# recency SLA. Freshness comes from _ingest_ts, which the append-only
+# landing stamps only on the first observation of a raw record.
+#
+# Run: dbt source freshness --profiles-dir . --target <env>
+#
+# freshness / loaded_at_field live under `config:` (Fusion-style YAML).
+
+sources:
+  - name: bronze_landing
+    description: >
+      Append-only bronze landing tables built by the staging models. One row
+      per raw record ever observed; re-ingesting the same file is a no-op.
+    database: "{{ target.catalog }}"
+    schema: bronze
+    config:
+      freshness:
+        warn_after: { count: 24, period: hour }
+        error_after: { count: 168, period: hour }
+    tables:
+      - name: stg_customers
+        description: "Raw customers CSV, append-only."
+        config:
+          loaded_at_field: _ingest_ts
+      - name: stg_products
+        description: "Raw products CSV, append-only."
+        config:
+          loaded_at_field: _ingest_ts
+      - name: stg_stores
+        description: "Raw stores CSV, append-only."
+        config:
+          loaded_at_field: _ingest_ts
+      - name: stg_orders
+        description: "Raw orders CSV, append-only."
+        config:
+          loaded_at_field: _ingest_ts
+      - name: stg_order_items
+        description: "Raw order items CSV, append-only."
+        config:
+          loaded_at_field: _ingest_ts
+      - name: stg_payments
+        description: "Raw payments CSV, append-only."
+        config:
+          loaded_at_field: _ingest_ts
+      - name: stg_returns
+        description: "Raw returns CSV, append-only."
+        config:
+          loaded_at_field: _ingest_ts

@@ -1,9 +1,12 @@
 version: 2
 
-# Bronze layer: faithful copies of the raw CSVs. Every source column is STRING
-# because files are read with inferColumnTypes => false. Only the two audit
-# columns are typed. Tests here are warnings: bronze intentionally preserves
-# dirty source values so they can be inspected and quarantined downstream.
+# Bronze layer: append-only landing of the raw CSVs (immutable source
+# history). Every source column is STRING because files are read with
+# inferColumnTypes => false. Only the two audit columns are typed. A record
+# whose full business-column tuple was already landed is skipped, so
+# re-ingesting the same file is a no-op, while changed source records land as
+# new rows. Tests here are warnings: bronze intentionally preserves dirty
+# source values so they can be inspected and quarantined downstream.
 
 models:
   - name: stg_orders
